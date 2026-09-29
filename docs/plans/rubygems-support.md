@@ -1,110 +1,70 @@
-# RubyGems support plan
+# RubyGems support
 
-Status: proposed; no RubyGems endpoints or configuration are implemented.
+Status: initial Bundler adapter implemented. Standalone `gem install`, full-index compatibility, hook inspection, and monthly download evidence remain future work.
 
-## Goal and initial scope
+## Implemented scope
 
-Support Bundler dependency resolution and `.gem` downloads through middles, applying minimum-age policy during resolution and again at artifact access. Follow with standalone `gem install` compatibility once its required protocol paths pass equivalent tests.
+Bundler resolves dependencies and downloads eligible gems through `/rubygems/`. Age policy applies per name/version/platform during resolution, compressed gemspec access, and archive access. The service remains request-driven, with no registry-wide crawl, Ruby runtime dependency, or persistent archive cache.
 
-Reuse the existing policy evaluation, upstream limits, redirect validation, and archive streaming. Preserve npm, pip, and Composer behavior. Keep the service request-driven, without a full-registry crawler or persistent archive cache.
-
-Initially exclude publishing, private upstream authentication, search, and unverified legacy client protocols. Document supported client versions before claiming compatibility.
-
-## 1. Validate client compatibility and index design
-
-Build a small protocol fixture and trace fresh installs, locked installs, and updates with selected Bundler and RubyGems versions. Establish the required endpoint surface under `/rubygems/`:
-
-| Endpoint | Intended role |
+| Endpoint | Behavior |
 | --- | --- |
-| `/rubygems/versions` | Compact index discovery and package information checksums |
-| `/rubygems/info/{name}` | Filtered versions, platforms, dependencies, and requirements |
-| `/rubygems/gems/{filename}` | Policy-checked gem download |
+| `/rubygems/api/v1/dependencies?gems=...` | Filtered Marshal dependency response; at most 100 distinct names |
+| `/rubygems/quick/Marshal.4.8/{filename}.gemspec.rz` | Exact release authorization, then bounded opaque gemspec fetch |
+| `/rubygems/gems/{filename}.gem` | Exact release authorization, then byte-preserving archive streaming |
+| `/rubygems/versions`, `/rubygems/names`, legacy full indexes | Unsupported, return 404 |
 
-Determine whether compressed gemspecs, `/names`, or legacy indexes are required for the selected clients. Unsupported paths must fail explicitly rather than expose an unfiltered upstream fallback.
+## Protocol decision
 
-Treat the relationship between `/versions` and `/info/{name}` as an implementation gate. The global index carries checksums of package information, while filtering changes those bytes. Determine and test a coherent approach that does not require fetching every gem's metadata. Do not assume that passing through upstream `/versions`, returning a partial catalog, or inventing checksums is compatible.
+The original plan proposed a filtered compact index. Investigation established that Bundler 2.4.22 consults the global `/versions` catalog before fetching package `/info` data: a partial or empty catalog would prevent resolution, and upstream checksums would not describe filtered package data. Producing a complete filtered catalog would conflict with the no-crawler design.
 
-Record the selected approach, client versions, and request traces before implementing the production adapter. If the approach requires full-registry materialization, revisit scope explicitly rather than silently adding a crawler.
+The implemented adapter therefore returns 404 for `/versions` and uses Bundler's dependency-API fallback. This was verified with a local fixture before implementation and then against the production adapter. Bundler 4.0.21's distributed source also retains `[CompactIndex, Dependency, Index]` fallback selection; runtime compatibility with that version has not been verified locally.
 
-Reference: [RubyGems compact index specification](https://guides.rubygems.org/rubygems-org-compact-index-api/).
+Typical verified request sequence:
 
-## 2. Add configuration and adapter plumbing
+1. Bundler probes `/rubygems/versions` and receives 404.
+2. It probes `/rubygems/api/v1/dependencies`, then queries root and transitive package names.
+3. Middles fetches upstream `/info/{name}` on demand and emits eligible dependency records.
+4. Bundler fetches eligible compressed gemspecs, including Ruby/RubyGems requirements, followed by `.gem` archives.
+5. Subsequent resolutions request dependency metadata again; the proxy recalculates age from cached upstream evidence. Direct gemspec/archive requests always recheck policy.
 
-- Add `src/registry/rubygems.rs` and register it in `src/registry/mod.rs`.
-- Add `/rubygems/` routes in `src/lib.rs`.
-- Add `[rubygems]` policy overrides and a configurable RubyGems upstream in `src/config.rs`, defaulting to `https://rubygems.org`.
-- Add verified gem download hosts to the artifact allowlist, retaining exact-host and redirect checks.
-- Validate gem names, versions, platforms, and filenames with RubyGems-specific rules before upstream access. Cover traversal, encoded separators, and ambiguous filename identities.
-- Preserve deployment under a configured public URL prefix.
+There is no transformed global index or index validator to keep coherent. Dependency responses are full responses with `Cache-Control: no-store`; upstream range offsets and validators are not forwarded. The dependency API does not convey compact-index artifact checksums to Bundler. Existing client caches and installed gems remain outside the enforcement boundary.
 
-## 3. Parse metadata and apply age policy
+## Implementation
 
-Extend the bounded metadata fetch/cache infrastructure to support text responses. `Store::get` currently assumes JSON; retain JSON callers while adding an appropriate raw/text representation. Preserve request coalescing, memory and disk budgets, TTLs, negative caching, and restart behavior. Coordinate this shared change with other adapters needing raw-response caching.
+- `src/registry/rubygems.rs` parses bounded upstream compact text and emits only primitive Marshal arrays, hashes, symbols, and strings. It never deserializes upstream Marshal objects or evaluates gemspecs.
+- `src/cache.rs` caches UTF-8 text under a separate key namespace using the existing shared metadata budget, SQLite persistence, TTL, and miss coalescing. JSON callers retain their existing behavior.
+- `src/config.rs` adds `[rubygems]` overrides and `upstream.rubygems`, defaulting to `https://rubygems.org`. Default archive hosts include `rubygems.org`.
+- `src/lib.rs` registers explicit RubyGems routes and shares bounded metadata fetching and archive transport.
+- `src/stats.rs` accepts `ecosystem=rubygems`; successful archive transfers record a release including its platform suffix when applicable. Gemspec requests do not count as gem downloads.
 
-Represent each release by **name, version, and platform**. Preserve RubyGems dependency constraints, Ruby/RubyGems requirements, prereleases, and artifact checksums; do not interpret RubyGems versions using Rust's SemVer rules.
+Publication age uses `created_at`, never `built_at`. Missing, malformed, and future timestamps fail closed, even with zero-day policy. Versions and constraints retain RubyGems semantics rather than being interpreted as SemVer. Yanks become visible when metadata refreshes; expired evidence is not served on upstream failure.
 
-Use publication `created_at` as age evidence. The current compact index exposes it, and the JSON versions API distinguishes publication time from `built_at`. Do not use build time as publication time. Hide releases with missing, malformed, or future publication timestamps, including under a zero-day policy. If a JSON fallback is needed for older upstream formats, match the exact version and platform and bound the additional requests.
+Conventional filenames are ambiguous when names contain numeric hyphenated segments. The adapter checks at most eight syntactically possible splits against authoritative package metadata and rejects collisions. Arbitrary upstream URLs, encoded separators, traversal, and unsupported paths are not accepted. Archive redirects retain the existing exact-host allowlist and concurrency controls.
 
-Apply the shared inclusive age boundary to each platform release independently. Cache upstream evidence, not filtered results or authorization decisions, so releases can age into eligibility without waiting for an upstream refresh. Respect yanks and document the existing metadata freshness window.
+## Policy limitations
 
-References: [compact index format](https://guides.rubygems.org/rubygems-org-compact-index-api/), [RubyGems version API](https://guides.rubygems.org/rubygems-org-api/#gem-version-methods).
+No suitable package-wide monthly evidence source has been configured. Effective nonzero `min_monthly_downloads`, including inherited values, fails startup validation. Operators must explicitly override RubyGems to zero when the global restriction is enabled. Lifetime counts are not substituted.
 
-## 4. Serve coherent indexes and enforce downloads
+Install-hook enforcement and `/inspect/rubygems/` are not implemented. Effective `install_hooks = "deny"` also fails startup validation; an explicit `report` override is required when inherited. `report` does not establish absence of execution: native extensions may run build code, and gem contents are not inspected.
 
-Generate index checksums and HTTP validators from the actual filtered representation. Account for changes caused by elapsed time, policy changes, upstream updates, and yanks. Preserve artifact checksums independently from index-response checksums.
+## Verification
 
-Start with full metadata responses if the compatibility fixture confirms clients accept them, then consider range optimization. Never forward upstream partial-response offsets or validators for transformed content. Verify warm-client-cache behavior rather than relying on `Cache-Control: no-store` alone. Ensure compression and digest headers describe the correct representation.
+`tests/rubygems.rs` covers per-platform age filtering, missing/future/malformed publication times, persisted raw text and policy changes, concurrent misses, yanks after refresh, conventional archive and gemspec denial, malformed requests, upstream failure, numeric names, ranges, transfer statistics, and unsupported inherited policies. Parser tests cover constraints, timestamp colons, checksums, and duplicate identities.
 
-Resolve conventional `.gem` filenames to an exact known release and recheck policy before streaming. Do not authorize downloads by filename parsing alone or accept arbitrary target URLs. Direct requests and requests originating from existing lockfiles must receive the same checks as fresh resolutions.
+`scripts/rubygems-smoke.py` builds inert local gems and tests fresh/repeat installs, a transitive native-platform dependency, a blocked stale lockfile, and a warm-client update discovering a newly eligible version. Verified locally with Ruby 2.6.10, RubyGems 3.0.3.1, and Bundler 2.4.22. It requires no public registry or package hooks. Run `just ruby-smoke`; use `BUNDLE_COMMAND` to select a specific client.
 
-Reuse `App::stream_artifact` for backpressure, range forwarding, timeouts, concurrency permits, and redirect allowlisting. Preserve archive bytes and avoid buffering full gems. Client checksum verification remains necessary; streaming does not provide pre-delivery verification of the entire archive.
+A live install of `rake 13.2.1` through the production adapter also passed with Bundler 2.4.22, including gemspec fetching and transfer accounting. The existing live multi-registry smoke script can include a public Ruby gem with `MIDDLES_SMOKE_RUBYGEMS=1`. Run the normal formatting, Clippy, Rust tests, and configuration validation checks alongside client verification.
 
-Return empty package information when every release is filtered, subject to the client fixture's protocol requirements. Distinguish unknown packages, policy denial, and upstream verification failures using the project's existing error conventions.
+## Remaining milestones
 
-## 5. Define unsupported policy behavior
+1. Add runtime verification for current Bundler/RubyGems versions to the client matrix. Establish standalone `gem install` requirements before advertising support; never add an unfiltered full-index fallback.
+2. Investigate a compact-index design only if it can provide a complete, coherent filtered catalog without a registry-wide crawl. Validate checksum, range, age-transition, and warm-cache behavior before replacing the dependency API.
+3. Add metadata-only extension inspection with explicit unknown evidence and exact version/platform selection. Define conservative enforcement before enabling `deny`.
+4. Add monthly-download policy only after identifying a provider with documented window semantics, freshness, limits, and fail-closed behavior.
+5. Consider optional client-visible artifact integrity support for the dependency API without buffering complete gem archives.
 
-### Monthly downloads
+## References
 
-The documented RubyGems download endpoints expose cumulative counts. No documented package-wide monthly source was identified during planning. Initially reject configurations whose effective RubyGems `min_monthly_downloads` is nonzero, including inherited values. Explain that an explicit RubyGems override of zero is required until a suitable provider exists.
-
-Do not substitute lifetime downloads, fabricate zero, or silently skip the restriction. A later monthly provider must define its window, freshness, failure behavior, and request limits.
-
-Reference: [RubyGems download API](https://guides.rubygems.org/rubygems-org-api/#gem-download-methods).
-
-### Install-hook inspection
-
-Report unavailable evidence explicitly, with no claim that a gem has no installation-time execution. Native extension builds are an execution surface requiring coverage. Until reliable extension evidence and enforcement are implemented, reject an effective RubyGems `install_hooks = "deny"`; permit an explicit `report` override.
-
-If adding `/inspect/rubygems/{name}`, require exact version and platform selection and preserve inspection's existing separation from artifact authorization. Do not execute gemspecs or package code. Do not infer extension safety solely from a platform label.
-
-Reference: [RubyGems extensions specification](https://guides.rubygems.org/specification-reference/#extensions).
-
-## 6. Test, document, and extend compatibility
-
-Add deterministic local fixtures covering:
-
-- Platform variants, prereleases, dependency constraints, checksums, and yanks.
-- Inclusive age boundaries and missing, malformed, or future timestamps.
-- Releases becoming eligible while upstream evidence remains cached.
-- Filtered-index consistency, validators, compression, and warm client caches.
-- Policy changes after restart, cache persistence, expiry, and concurrent misses.
-- Blocked direct downloads and lockfile requests, malformed identities, redirect allowlisting, and range responses.
-- Unsupported inherited monthly-download and install-hook policies.
-- Upstream failures, oversized metadata, and bounded archive streaming.
-
-Extend `scripts/smoke.py` with opt-in isolated Bundler installs using recorded client versions and fresh caches. Exercise fresh resolution, locked installation, and update. Verify package download requests stay on the proxy and include a platform-specific gem in compatibility coverage.
-
-Update `README.md`, `middles.example.toml`, and package metadata when implementation exists. Provide source configuration examples and explain supported clients, policy limitations, metadata freshness, and bypasses through alternate sources, direct URLs, VCS dependencies, or client caches.
-
-Add standalone `gem install` support as a subsequent milestone after identifying and implementing its additional required endpoints. Give any added metadata paths the same filtering and artifact authorization rules; avoid broad passthrough routes.
-
-## First-release acceptance criteria
-
-- A fresh Bundler resolution selects eligible versions and installs their dependencies through the proxy.
-- A blocked version cannot download through a conventional gem URL or an existing lockfile.
-- Version/platform identity remains consistent across metadata, policy checks, and archive lookup.
-- Warm client caches refresh correctly after upstream changes, policy changes, and age transitions.
-- Index checksums and validators match the served representations without a full-registry crawler.
-- Unsupported effective policies fail configuration validation with actionable errors.
-- Existing npm, pip, Composer, inspection, and cache behavior remains intact.
-- `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, and `cargo test --locked` pass, along with the selected real-client smoke checks.
+- [RubyGems compact index](https://guides.rubygems.org/rubygems-org-compact-index-api/)
+- [RubyGems publication and download APIs](https://guides.rubygems.org/rubygems-org-api/)
+- [RubyGems native extensions](https://guides.rubygems.org/specification-reference/#extensions)

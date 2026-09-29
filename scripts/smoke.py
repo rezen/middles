@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,21 @@ min_age_days = 0
         lock = json.loads((composer_dir / "composer.lock").read_text())
         assert lock["packages"][0]["dist"]["url"].startswith(origin + "/artifacts/composer/")
         assert "source" not in lock["packages"][0]
+        if os.environ.get("MIDDLES_SMOKE_RUBYGEMS") == "1":
+            ruby_dir = work / "ruby"
+            ruby_dir.mkdir()
+            (ruby_dir / "Gemfile").write_text(f'source "{origin}/rubygems/"\ngem "rake", "13.2.1"\n')
+            ruby_env = {key: value for key, value in env.items() if not key.startswith("BUNDLE_")}
+            ruby_env.update(BUNDLE_USER_HOME=str(work / "bundle-home"), BUNDLE_PATH=str(work / "gems"),
+                            BUNDLE_APP_CONFIG=str(work / "bundle-config"), BUNDLE_PLUGINS="false",
+                            BUNDLE_DISABLE_VERSION_CHECK="true", GEM_SPEC_CACHE=str(work / "gem-spec-cache"))
+            bundle = shlex.split(os.environ.get("BUNDLE_COMMAND", "bundle"))
+            run([*bundle, "install"], ruby_dir, ruby_env)
+            assert f"remote: {origin}/rubygems/" in (ruby_dir / "Gemfile.lock").read_text()
+            with urllib.request.urlopen(origin + "/stats?ecosystem=rubygems&package=rake") as response:
+                assert "rake" in json.dumps(json.load(response))
+            print("PASS: live RubyGems download through middles", flush=True)
+
         print("PASS: live hook inspection plus npm, pip, and Composer downloads through middles", flush=True)
     finally:
         proxy.terminate()

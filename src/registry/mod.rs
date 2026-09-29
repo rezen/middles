@@ -1,6 +1,7 @@
 pub mod composer;
 pub mod npm;
 pub mod pip;
+pub mod rubygems;
 
 use crate::error::{Error, Result};
 

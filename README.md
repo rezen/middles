@@ -1,6 +1,6 @@
 # middles
 
-A focused Rust registry proxy for npm, pip/PyPI, and Composer 2. It filters out releases younger than your policy allows, optionally requires a minimum monthly download count, and rechecks policy when serving package archives. RubyGems and a [Docker registry proxy](docs/plans/docker-registry-proxy.md) are planned; neither is implemented yet.
+A focused Rust registry proxy for npm, pip/PyPI, Composer 2, and RubyGems through Bundler. It filters out releases younger than your policy allows, optionally requires a minimum monthly download count where evidence is available, and rechecks policy when serving package archives. A [Docker registry proxy](docs/plans/docker-registry-proxy.md) is planned.
 
 One binary, no external database or background registry crawl. Tokio + Axum serve requests, reqwest pools upstream connections, Moka holds hot metadata, and SQLite persists metadata and download statistics locally. Archives stream with backpressure and are not stored or buffered in full.
 
@@ -144,6 +144,31 @@ Merge this into `composer.json`:
 
 **Composer has an initial waiting period.** Packagist's `time` is VCS-derived, not a trustworthy publication timestamp. A release must satisfy both its reported age and the time since this proxy first observed its version, time, source, and dist identity. Changing that identity starts a new waiting period. The first request for a package records its releases, even if all are blocked. Warm required packages by fetching `/composer/p2/vendor/package.json`, then wait the configured number of days. There is no automatic full-registry crawler. Persist and back up the SQLite database; losing it restarts these waiting periods. Setting `[composer] min_age_days = 0` explicitly disables this waiting period for local compatibility testing.
 
+### RubyGems / Bundler
+
+Use the proxy as the Gemfile's source:
+
+```ruby
+source "http://127.0.0.1:8080/rubygems/"
+gem "rake"
+```
+
+Then run `bundle install`. Use HTTPS for shared deployments. Replace other RubyGems sources and regenerate affected lockfiles through the proxy; existing installations, cached gems, and direct Git/path sources can bypass it.
+
+The adapter implements Bundler's dependency API plus conventional gemspec and `.gem` downloads. `/versions` intentionally returns 404 so Bundler uses the dependency API; no partial global compact index is published. Upstream compact `/info` metadata is fetched only for requested gems. Publication `created_at` is evaluated separately for each version/platform, and missing or invalid times fail closed. Blocked gemspecs and direct archive requests are denied again, including requests from lockfiles. Ruby and RubyGems requirements are read by Bundler from the eligible gemspec; the dependency API does not carry compact-index artifact checksums to the client.
+
+Fresh installs, repeat installs, native-platform selection, blocked stale lockfiles, and warm-cache updates are verified with Bundler 2.4.22 on Ruby 2.6.10. Bundler 4.0.21's source retains the same fallback, but that runtime has not been verified locally. Standalone `gem install`, full-index mode, search, publishing, and private registry authentication are not claimed as supported.
+
+RubyGems has no configured monthly-download evidence provider or install-hook inspection. Nonzero monthly thresholds and `install_hooks = "deny"`, including inherited values, fail configuration validation. If your global policy enables either restriction, explicitly opt RubyGems out to use this adapter:
+
+```toml
+[rubygems]
+min_monthly_downloads = 0
+install_hooks = "report"
+```
+
+`report` does not inspect gem contents or establish that installation is free of code execution; native extensions may run build code. There is currently no `/inspect/rubygems/` endpoint. The adapter never evaluates Ruby gemspecs or deserializes upstream Marshal objects itself. See the [implementation notes and remaining work](docs/plans/rubygems-support.md).
+
 ## Policies
 
 ```toml
@@ -169,6 +194,7 @@ Unspecified ecosystem values inherit the global policy. A day is exactly 86,400 
 | npm | Registry publication time for the version | npm's last 30 available days, all versions combined |
 | pip | Simple API upload time for each file | PyPI Stats `last_month`, package-wide |
 | Composer | Reported time plus durable local first observation | Packagist `monthly`, package-wide |
+| RubyGems | Compact info publication `created_at`, per version/platform | Unavailable; effective threshold must be zero |
 
 Monthly windows follow each provider's semantics; they are not a single synchronized measurement. Counts are popularity signals, not unique users, evidence of safety, or downloads of the selected version. Missing statistics, malformed responses, rate limits, and upstream failures deny access when a threshold is enabled. The service does not substitute a fabricated zero or serve expired data on failure.
 
@@ -187,7 +213,7 @@ curl 'http://127.0.0.1:8080/stats?limit=50&offset=50'
 Each release includes `ecosystem`, `package`, `release`, `full_downloads`,
 `range_transfers`, `bytes`, `first_download`, and `last_download`. Totals also
 include distinct `packages` and `releases`; the same package name in two
-ecosystems counts separately. For npm and Composer, `release` is the version;
+ecosystems counts separately. For RubyGems, `release` includes the platform suffix for non-`ruby` gems. For npm and Composer, `release` is the version;
 for Python it is the exact wheel or source filename. Timestamps are Unix seconds
 in UTC, and first/last timestamps are null when no transfers have been recorded.
 The optional `ecosystem` and exact `package` filters apply to the entire report;
@@ -256,10 +282,10 @@ Execution semantics: [npm lifecycle scripts](https://docs.npmjs.com/cli/v11/usin
 
 ## Cache and performance
 
-- Hot parsed JSON has a configurable approximate weight budget: 64 MiB by default, split 75% metadata / 25% statistics. Accounting estimates parsed JSON at four times its encoded size; this is not a hard process RSS limit.
+- Hot JSON and RubyGems text metadata share a configurable approximate weight budget: 64 MiB by default, split 75% metadata / 25% statistics. Accounting estimates parsed JSON at four times its encoded size; this is not a hard process RSS limit.
 - SQLite uses WAL, prepared ledger statements, indexed expiry/eviction, and a small page cache. Blocking database work runs outside the async workers. A 512 MiB default response budget includes payloads and estimated entry overhead; deleted pages are reused. The physical database, indexes, WAL, and Composer safety ledger can exceed this budget.
 - Concurrent misses for the same upstream URL share one fetch. Defaults: metadata freshness 5 minutes, statistics freshness 24 hours. Disk hits keep their original expiry. Policy is recalculated on every request, so releases age into eligibility without waiting for metadata refresh.
-- Successful metadata responses persist across restarts. Errors are cached in memory for 30 seconds to reduce repeated failed requests. HTTP 404 remains 404; policy denial is 403; unverifiable/upstream failures are 502. An all-filtered pip/Composer listing is empty, allowing clients to report no matching version.
+- Successful index metadata responses persist across restarts. Errors are cached in memory for 30 seconds to reduce repeated failed requests. HTTP 404 remains 404; policy denial is 403; unverifiable/upstream failures are 502. An all-filtered pip/Composer/RubyGems listing is empty, allowing clients to report no matching version.
 - Upstream concurrency defaults to 32. Archive streams retain their permit until completion/disconnect and forward range requests. Metadata responses are bounded at 32 MiB after decompression. Archives use read-idle timeouts and preserve upstream bytes.
 - No background polling, archive cache, Redis, or mandatory statistics traffic. This is an initial implementation, not a published throughput benchmark.
 
@@ -297,9 +323,11 @@ cargo test --locked
 
 For an opt-in live compatibility check, build the binary and run `python3 scripts/smoke.py` with npm, pip, and Composer installed. It installs/downloads small public packages into a temporary directory with scripts/plugins disabled and isolated caches. It explicitly sets Composer's age to zero to test fresh-cache installation; deterministic tests separately verify its waiting period.
 
+Run `just ruby-smoke` for local-only RubyGems/Bundler compatibility checks with inert generated gems and isolated caches. Requires Ruby, RubyGems, Bundler, and Python 3. Set `BUNDLE_COMMAND` to select a Bundler executable. Set `MIDDLES_SMOKE_RUBYGEMS=1` when running the multi-registry live smoke test to include a public Ruby gem.
+
 Tests use local HTTP fixtures and temporary SQLite databases. They cover age boundaries, missing timestamps, npm tag fallback and scoped packages, blocked direct archives, Python per-file filtering and core metadata, Composer delta expansion and durable first observation, download thresholds, restart behavior, concurrent cache misses, expiry, eviction, range requests, and redirect allowlisting.
 
-Registry-specific parsing, filtering, URL rewriting, and artifact lookup live in `src/registry/`. Shared policy, caching, downloads checks, and streaming live outside the adapters. To add RubyGems, add a registry adapter for its index protocols and gem downloads, connect its age/download evidence to the shared policy, and add client compatibility fixtures. No RubyGems endpoint currently claims support.
+Registry-specific parsing, filtering, URL rewriting, and artifact lookup live in `src/registry/`. Shared policy, caching, downloads checks, and streaming live outside the adapters. RubyGems uses a request-driven dependency adapter; its global compact index and legacy full indexes are deliberately unsupported.
 
 The isolated [stats write benchmark](benchmarks/stats/README.md) compares SQLite,
 redb, and Fjall with atomic counters and recent-download indexes. Run it with
@@ -311,3 +339,5 @@ for throughput, latency, durability settings, and workload limitations.
 - [npm package metadata](https://github.com/npm/registry/blob/main/docs/responses/package-metadata.md) and [download counts](https://github.com/npm/registry/blob/main/docs/download-counts.md)
 - [Python Simple repository API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) and [PyPI Stats API](https://pypistats.org/api/)
 - [Composer repository protocol](https://getcomposer.org/doc/05-repositories.md), [Composer schema](https://getcomposer.org/doc/04-schema.md), and [Packagist statistics](https://packagist.org/apidoc)
+
+RubyGems references: [compact index metadata](https://guides.rubygems.org/rubygems-org-compact-index-api/), [publication and download APIs](https://guides.rubygems.org/rubygems-org-api/), and [native extensions](https://guides.rubygems.org/specification-reference/#extensions).

@@ -99,6 +99,31 @@ impl Store {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<Vec<u8>>>,
     {
+        self.get_decoded(key, stats, false, fetch).await
+    }
+
+    /// Cache bounded UTF-8 upstream text in the same budget as JSON metadata.
+    /// The Value string is an unfiltered representation, not an authorization decision.
+    pub async fn get_text<F, Fut>(&self, key: String, fetch: F) -> Result<Arc<Value>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Vec<u8>>>,
+    {
+        self.get_decoded(format!("text:{key}"), false, true, fetch)
+            .await
+    }
+
+    async fn get_decoded<F, Fut>(
+        &self,
+        key: String,
+        stats: bool,
+        text: bool,
+        fetch: F,
+    ) -> Result<Arc<Value>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Vec<u8>>>,
+    {
         let hot = if stats { &self.stats } else { &self.metadata };
         if let Some(e) = self.failures.get(&key).await {
             return Err(e);
@@ -121,7 +146,12 @@ impl Store {
                 }
             };
             let (body, value) = tokio::task::spawn_blocking(move || {
-                let value: Value = serde_json::from_slice(&body).map_err(|_| Error::upstream("invalid upstream JSON"))?;
+                let value: Value = if text {
+                    Value::String(std::str::from_utf8(&body)
+                        .map_err(|_| Error::upstream("invalid upstream UTF-8"))?.to_owned())
+                } else {
+                    serde_json::from_slice(&body).map_err(|_| Error::upstream("invalid upstream JSON"))?
+                };
                 Ok::<_, Error>((body, value))
             }).await.map_err(|e| Error::internal(e.to_string()))??;
             // Approximate parsed JSON allocation, plus key/entry overhead.

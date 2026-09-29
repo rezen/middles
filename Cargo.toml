@@ -2,7 +2,7 @@
 name = "middles"
 version = "0.1.0"
 edition = "2024"
-description = "A small policy-enforcing proxy for npm, PyPI, and Composer"
+description = "A small policy-enforcing proxy for npm, PyPI, Composer, and RubyGems"
 license = "MIT"
 
 [dependencies]

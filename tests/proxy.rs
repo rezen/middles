@@ -53,6 +53,9 @@ async fn fixture(days: u32, minimum: u64, downloads: u64) -> Fixture {
     config.cache.path = dir.path().join("cache.sqlite3");
     config.policy.min_age_days = days;
     config.policy.min_monthly_downloads = minimum;
+    // These fixtures exercise ecosystems with monthly and hook evidence.
+    config.rubygems.min_monthly_downloads = Some(0);
+    config.rubygems.install_hooks = Some(middles::inspection::HookPolicy::Report);
     config.upstream.npm = origin.clone();
     config.upstream.pypi = origin.clone();
     config.upstream.packagist = origin.clone();

@@ -68,6 +68,18 @@ impl App {
             )
             .route("/npm/{*path}", get(registry::npm::handle))
             .route("/stats", get(stats::handle))
+            .route(
+                "/rubygems/api/v1/dependencies",
+                get(registry::rubygems::dependencies),
+            )
+            .route(
+                "/rubygems/gems/{filename}",
+                get(registry::rubygems::download),
+            )
+            .route(
+                "/rubygems/quick/Marshal.4.8/{filename}",
+                get(registry::rubygems::gemspec),
+            )
             .route("/inspect/{ecosystem}/{*package}", get(inspection::handle))
             .route("/pip/simple/{name}/", get(registry::pip::handle))
             .route("/composer/packages.json", get(registry::composer::index))
@@ -89,42 +101,50 @@ impl App {
     ) -> Result<Arc<Value>> {
         let key = format!("{accept}:{url}");
         self.store
-            .get(key, stats, || async {
-                let _permit = self
-                    .permits
-                    .acquire()
-                    .await
-                    .map_err(|_| Error::internal("shutdown"))?;
-                let response = self
-                    .client
-                    .get(&url)
-                    .header("accept", accept)
-                    .send()
-                    .await
-                    .map_err(|e| Error::upstream(e.to_string()))?;
-                let status = response.status();
-                if status == StatusCode::NOT_FOUND {
-                    return Err(Error::missing("upstream package not found"));
-                }
-                if !status.is_success() {
-                    return Err(Error::upstream(format!("upstream returned {status}")));
-                }
-                let max = self.config.upstream.max_metadata_mb * 1024 * 1024;
-                if response.content_length().is_some_and(|s| s > max as u64) {
-                    return Err(Error::upstream("upstream metadata too large"));
-                }
-                let mut stream = response.bytes_stream();
-                let mut body = Vec::new();
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk.map_err(|e| Error::upstream(e.to_string()))?;
-                    if body.len().saturating_add(chunk.len()) > max {
-                        return Err(Error::upstream("upstream metadata too large"));
-                    }
-                    body.extend_from_slice(&chunk);
-                }
-                Ok(body)
-            })
+            .get(key, stats, || self.fetch_metadata(&url, accept))
             .await
+    }
+
+    pub(crate) async fn text_metadata(&self, url: String) -> Result<Arc<Value>> {
+        self.store
+            .get_text(url.clone(), || self.fetch_metadata(&url, "text/plain"))
+            .await
+    }
+
+    async fn fetch_metadata(&self, url: &str, accept: &str) -> Result<Vec<u8>> {
+        let _permit = self
+            .permits
+            .acquire()
+            .await
+            .map_err(|_| Error::internal("shutdown"))?;
+        let response = self
+            .client
+            .get(url)
+            .header("accept", accept)
+            .send()
+            .await
+            .map_err(|e| Error::upstream(e.to_string()))?;
+        let status = response.status();
+        if status == StatusCode::NOT_FOUND {
+            return Err(Error::missing("upstream package not found"));
+        }
+        if !status.is_success() {
+            return Err(Error::upstream(format!("upstream returned {status}")));
+        }
+        let max = self.config.upstream.max_metadata_mb * 1024 * 1024;
+        if response.content_length().is_some_and(|s| s > max as u64) {
+            return Err(Error::upstream("upstream metadata too large"));
+        }
+        let mut stream = response.bytes_stream();
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| Error::upstream(e.to_string()))?;
+            if body.len().saturating_add(chunk.len()) > max {
+                return Err(Error::upstream("upstream metadata too large"));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     }
     pub async fn check_downloads(&self, ecosystem: &str, package: &str) -> Result<()> {
         let minimum = self.config.policy_for(ecosystem).min_monthly_downloads;

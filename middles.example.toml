@@ -20,6 +20,12 @@ install_hooks = "report"
 # Composer also requires this many days since first observed by this proxy.
 # Preserve the SQLite file across deployments.
 
+[rubygems]
+# Age inherits [policy]. Monthly evidence and hook inspection are unavailable.
+# Explicit overrides are needed if the global policy enables these restrictions.
+min_monthly_downloads = 0
+install_hooks = "report"
+
 [cache]
 path = "data/cache.sqlite3"
 memory_mb = 64
@@ -29,8 +35,9 @@ metadata_ttl_secs = 300
 stats_ttl_secs = 86400
 
 [upstream]
+# rubygems = "https://rubygems.org"
 timeout_secs = 60
 concurrency = 32
 max_metadata_mb = 32
 # Add exact archive hosts only when needed. Every redirect is checked too.
-artifact_hosts = ["registry.npmjs.org", "files.pythonhosted.org", "api.github.com", "github.com", "codeload.github.com", "gitlab.com", "bitbucket.org"]
+artifact_hosts = ["registry.npmjs.org", "files.pythonhosted.org", "rubygems.org", "api.github.com", "github.com", "codeload.github.com", "gitlab.com", "bitbucket.org"]

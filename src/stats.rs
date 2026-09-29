@@ -53,7 +53,7 @@ pub(crate) async fn handle(
         return Err(Error::bad("limit must be between 1 and 1000"));
     }
     if let Some(ecosystem) = &query.ecosystem {
-        if !matches!(ecosystem.as_str(), "npm" | "pip" | "composer") {
+        if !matches!(ecosystem.as_str(), "npm" | "pip" | "composer" | "rubygems") {
             return Err(Error::bad("unknown ecosystem"));
         }
         if ecosystem == "pip"

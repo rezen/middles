@@ -51,6 +51,10 @@ ci: fmt-check lint test config-check
 smoke: build
     python3 scripts/smoke.py
 
+# Local-only Bundler checks using inert fixture gems; requires Ruby and Bundler.
+ruby-smoke: build
+    python3 scripts/rubygems-smoke.py
+
 # Build the container image.
 docker-build:
     docker compose build

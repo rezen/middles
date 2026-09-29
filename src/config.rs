@@ -13,6 +13,7 @@ pub struct Config {
     pub npm: Override,
     pub pip: Override,
     pub composer: Override,
+    pub rubygems: Override,
     pub upstream: Upstream,
 }
 
@@ -40,6 +41,7 @@ pub struct Upstream {
     pub npm: String,
     pub pypi: String,
     pub packagist: String,
+    pub rubygems: String,
     pub npm_stats: String,
     pub pypi_stats: String,
     pub composer_stats: String,
@@ -60,6 +62,7 @@ impl Default for Config {
             npm: Override::default(),
             pip: Override::default(),
             composer: Override::default(),
+            rubygems: Override::default(),
             upstream: Upstream::default(),
         }
     }
@@ -81,12 +84,14 @@ impl Default for Upstream {
             npm: "https://registry.npmjs.org".into(),
             pypi: "https://pypi.org".into(),
             packagist: "https://repo.packagist.org".into(),
+            rubygems: "https://rubygems.org".into(),
             npm_stats: "https://api.npmjs.org".into(),
             pypi_stats: "https://pypistats.org".into(),
             composer_stats: "https://packagist.org".into(),
             artifact_hosts: [
                 "registry.npmjs.org",
                 "files.pythonhosted.org",
+                "rubygems.org",
                 "api.github.com",
                 "github.com",
                 "codeload.github.com",
@@ -108,6 +113,7 @@ impl Config {
             "npm" => &self.npm,
             "pip" => &self.pip,
             "composer" => &self.composer,
+            "rubygems" => &self.rubygems,
             _ => unreachable!(),
         };
         Policy {
@@ -151,6 +157,7 @@ impl Config {
             &self.upstream.npm,
             &self.upstream.pypi,
             &self.upstream.packagist,
+            &self.upstream.rubygems,
             &self.upstream.npm_stats,
             &self.upstream.pypi_stats,
             &self.upstream.composer_stats,
@@ -167,6 +174,17 @@ impl Config {
                     "upstream URLs require HTTPS, no credentials/query/fragment (allow_http is for local tests)"
                 );
             }
+        }
+        let ruby = self.policy_for("rubygems");
+        if ruby.min_monthly_downloads != 0 {
+            bail!(
+                "RubyGems monthly download evidence is unavailable; set [rubygems] min_monthly_downloads = 0"
+            );
+        }
+        if ruby.install_hooks == crate::inspection::HookPolicy::Deny {
+            bail!(
+                "RubyGems install-hook enforcement is unavailable; set [rubygems] install_hooks = \"report\""
+            );
         }
         Ok(())
     }
