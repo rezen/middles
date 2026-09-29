@@ -1,0 +1,26 @@
+services:
+  middles:
+    build: .
+    image: middles:local
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      RUST_LOG: "${RUST_LOG:-middles=info,tower_http=info}"
+    volumes:
+      - type: bind
+        source: "${MIDDLES_CONFIG:-./middles.docker.toml}"
+        target: /etc/middles/middles.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - middles-data:/var/lib/middles
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  middles-data:

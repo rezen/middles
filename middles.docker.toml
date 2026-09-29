@@ -1,0 +1,9 @@
+listen = "0.0.0.0:8080"
+# Set to the address clients use, including the published port or ingress prefix.
+public_url = "http://127.0.0.1:8080"
+
+[cache]
+# Persist this entire directory, including SQLite WAL files and Composer history.
+path = "/var/lib/middles/cache.sqlite3"
+
+# All other settings inherit the application defaults. See middles.example.toml.

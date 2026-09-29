@@ -1,0 +1,36 @@
+listen = "127.0.0.1:8080"
+# The client-visible base URL. Set this to your HTTPS URL behind a reverse proxy.
+public_url = "http://127.0.0.1:8080"
+
+[policy]
+min_age_days = 7
+# Package-wide monthly downloads; 0 disables statistics requests entirely.
+min_monthly_downloads = 0
+# Inspect cached registry metadata; "deny" also rejects known dependency hooks,
+# Composer plugins/installers, and Python source builds. See README limitations.
+install_hooks = "report"
+
+# Each ecosystem inherits unspecified values from [policy].
+[npm]
+# min_monthly_downloads = 1000
+# install_hooks = "deny"
+[pip]
+# min_age_days = 14
+[composer]
+# Composer also requires this many days since first observed by this proxy.
+# Preserve the SQLite file across deployments.
+
+[cache]
+path = "data/cache.sqlite3"
+memory_mb = 64
+# Budget for cached response payloads and entry overhead, not a physical DB size cap.
+disk_mb = 512
+metadata_ttl_secs = 300
+stats_ttl_secs = 86400
+
+[upstream]
+timeout_secs = 60
+concurrency = 32
+max_metadata_mb = 32
+# Add exact archive hosts only when needed. Every redirect is checked too.
+artifact_hosts = ["registry.npmjs.org", "files.pythonhosted.org", "api.github.com", "github.com", "codeload.github.com", "gitlab.com", "bitbucket.org"]

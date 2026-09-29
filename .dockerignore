@@ -1,0 +1,9 @@
+# Only build inputs enter the context; exclude local config, credentials, and DBs.
+**
+!Dockerfile
+!.dockerignore
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!middles.docker.toml
