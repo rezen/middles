@@ -55,6 +55,14 @@ smoke: build
 ruby-smoke: build
     python3 scripts/rubygems-smoke.py
 
+# Local signed APT fixture through Debian and Ubuntu clients; requires Docker and GPG.
+apt-smoke: build
+    python3 scripts/apt-compatibility.py --proxy
+
+# Exercise the signed APT fixture through the production Docker image.
+apt-docker-smoke: docker-build
+    python3 scripts/apt-compatibility.py --proxy-image middles:local
+
 # Opt-in isolated Homebrew client -> middles -> official GHCR smoke; see docs/homebrew.
 homebrew-smoke *args: build
     python3 scripts/homebrew-smoke.py "$@"

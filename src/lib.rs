@@ -31,10 +31,10 @@ pub struct App {
     pub config: Arc<Config>,
     pub store: Store,
     client: reqwest::Client,
-    artifact_client: reqwest::Client,
+    pub(crate) artifact_client: reqwest::Client,
     // Archive streams hold a permit for the whole client transfer, so they get
     // their own pool; slow downloads must not starve metadata resolution.
-    metadata_permits: Arc<Semaphore>,
+    pub(crate) metadata_permits: Arc<Semaphore>,
     artifact_permits: Arc<Semaphore>,
     pub(crate) oci: registry::oci::Transport,
     pub(crate) homebrew_key: &'static [u8],
@@ -57,7 +57,11 @@ impl App {
             .redirect(reqwest::redirect::Policy::none())
             .gzip(false)
             .build()?;
-        let store = Store::open_with_raw(config.cache.clone(), config.homebrew.enabled).await?;
+        let store = Store::open_with_raw(
+            config.cache.clone(),
+            config.homebrew.enabled || config.apt.enabled,
+        )
+        .await?;
         Ok(Self {
             metadata_permits: Arc::new(Semaphore::new(config.upstream.concurrency)),
             artifact_permits: Arc::new(Semaphore::new(config.upstream.concurrency)),
@@ -100,6 +104,7 @@ impl App {
             .fallback(|| async { Error::missing("unsupported endpoint") })
             .layer(CompressionLayer::new())
             .merge(registry::homebrew::routes())
+            .merge(registry::apt::routes())
             .layer(TraceLayer::new_for_http())
             .with_state(self)
     }
@@ -185,7 +190,7 @@ impl App {
                 "/downloads/monthly",
             ),
             // Configuration validation rejects a nonzero RubyGems threshold.
-            Ecosystem::Rubygems | Ecosystem::Homebrew => {
+            Ecosystem::Rubygems | Ecosystem::Homebrew | Ecosystem::Apt => {
                 return Err(Error::internal("no monthly download evidence provider"));
             }
         };
@@ -247,6 +252,16 @@ impl App {
         headers: HeaderMap,
         identity: Option<stats::Identity>,
     ) -> Result<Response> {
+        self.stream_download_method(raw, headers, identity, false)
+            .await
+    }
+    pub(crate) async fn stream_download_method(
+        &self,
+        raw: &str,
+        headers: HeaderMap,
+        identity: Option<stats::Identity>,
+        head: bool,
+    ) -> Result<Response> {
         let permit = self
             .artifact_permits
             .clone()
@@ -255,7 +270,9 @@ impl App {
             .map_err(|_| Error::internal("shutdown"))?;
         let mut url = self.allowed_artifact(raw)?;
         for redirect in 0..=5 {
-            let mut request = self.artifact_client.get(url.clone());
+            let mut request = self
+                .artifact_client
+                .request(if head { Method::HEAD } else { Method::GET }, url.clone());
             for name in ["range", "if-range"] {
                 if let Some(value) = headers.get(name) {
                     request = request.header(name, value);
@@ -289,7 +306,7 @@ impl App {
                 )));
             }
             return self
-                .stream_response(response, permit, identity, false, None)
+                .stream_response(response, permit, identity, head, None)
                 .await;
         }
         unreachable!()
@@ -391,6 +408,7 @@ async fn artifact(
         }
         Ecosystem::Composer => registry::composer::artifact(&app, &package, &release).await?,
         Ecosystem::Homebrew => return Err(Error::bad("bottles are served from /homebrew/v2")),
+        Ecosystem::Apt => return Err(Error::bad("APT archives are served from /apt")),
         Ecosystem::Rubygems => {
             return Err(Error::bad("gem archives are served from /rubygems/gems"));
         }

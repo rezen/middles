@@ -41,6 +41,20 @@ platforms = ["arm64_tahoe"]
 # The signed formula catalogue exceeds the general 32 MiB metadata default.
 max_api_mb = 64
 
+[apt]
+enabled = false
+max_index_mb = 96
+# APT has no monthly download evidence and cannot inspect maintainer scripts.
+min_monthly_downloads = 0
+install_hooks = "report"
+# To enable, add deb.debian.org to upstream.artifact_hosts and configure a repo:
+# [[apt.repos]]
+# name = "debian"
+# url = "https://deb.debian.org/debian"
+# suites = ["bookworm", "bookworm-updates"]
+# components = ["main"]
+# architectures = ["amd64"]
+
 [cache]
 path = "data/cache.sqlite3"
 memory_mb = 64

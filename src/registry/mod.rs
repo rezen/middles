@@ -1,3 +1,4 @@
+pub mod apt;
 pub mod composer;
 pub mod homebrew;
 pub mod npm;
@@ -15,6 +16,7 @@ pub enum Ecosystem {
     Composer,
     Rubygems,
     Homebrew,
+    Apt,
 }
 
 impl Ecosystem {
@@ -25,6 +27,7 @@ impl Ecosystem {
             "composer" => Ok(Self::Composer),
             "rubygems" => Ok(Self::Rubygems),
             "homebrew" => Ok(Self::Homebrew),
+            "apt" => Ok(Self::Apt),
             _ => Err(Error::bad("unknown ecosystem")),
         }
     }
@@ -35,6 +38,7 @@ impl Ecosystem {
             Self::Composer => "composer",
             Self::Rubygems => "rubygems",
             Self::Homebrew => "homebrew",
+            Self::Apt => "apt",
         }
     }
 }

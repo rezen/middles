@@ -1,14 +1,16 @@
 # middles
 
-A focused Rust registry proxy for npm, pip/PyPI, Composer 2, RubyGems through Bundler, and opt-in official Homebrew bottles. It filters out releases younger than your policy allows, optionally requires a minimum monthly download count where evidence is available, and rechecks policy when serving package archives. A [Docker registry proxy](docs/plans/docker-registry-proxy.md) is planned.
+A focused Rust registry proxy for npm, pip/PyPI, Composer 2, RubyGems through Bundler, opt-in official Homebrew bottles, and opt-in APT repositories. It filters out releases younger than your policy allows, optionally requires a minimum monthly download count where evidence is available, and rechecks policy when serving package archives. A [Docker registry proxy](docs/plans/docker-registry-proxy.md) is planned.
 
 Homebrew support is disabled by default and enforces policy on official stable bottle requests that reach middles. Source downloads and client caches can bypass it; see the [Homebrew guide](docs/homebrew/README.md) and [recorded compatibility checks](docs/homebrew/compatibility.md).
+
+APT support is disabled by default. It passes signed repository indexes through unchanged and gates configured binary `.deb` downloads by durable local first observation of each checksum; see the [APT guide](docs/apt/README.md) and [client compatibility record](docs/apt/compatibility.md).
 
 One binary, no external database or background registry crawl. Tokio + Axum serve requests, reqwest pools upstream connections, Moka holds hot metadata, and SQLite persists metadata and download statistics locally. Archives stream with backpressure and are not stored or buffered in full.
 
 ## Run
 
-Requires current stable Rust and a C toolchain to build bundled SQLite.
+Requires current stable Rust and a C toolchain to build bundled SQLite and the xz decoder.
 
 ```sh
 cargo build --release --locked

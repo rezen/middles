@@ -16,6 +16,7 @@ pub struct Config {
     pub composer: Override,
     pub rubygems: Override,
     pub homebrew: Homebrew,
+    pub apt: Apt,
     pub upstream: Upstream,
 }
 
@@ -38,6 +39,38 @@ pub struct Homebrew {
     pub api: String,
     pub platforms: Vec<String>,
     pub max_api_mb: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Apt {
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub policy: Override,
+    pub max_index_mb: usize,
+    pub repos: Vec<AptRepo>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AptRepo {
+    pub name: String,
+    pub url: String,
+    pub suites: Vec<String>,
+    pub components: Vec<String>,
+    pub architectures: Vec<String>,
+    pub min_age_days: Option<u32>,
+}
+
+impl Default for Apt {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            policy: Override::default(),
+            max_index_mb: 96,
+            repos: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
@@ -101,6 +134,7 @@ impl Default for Config {
             composer: Override::default(),
             rubygems: Override::default(),
             homebrew: Homebrew::default(),
+            apt: Apt::default(),
             upstream: Upstream::default(),
         }
     }
@@ -153,6 +187,7 @@ impl Config {
             Ecosystem::Composer => &self.composer,
             Ecosystem::Rubygems => &self.rubygems,
             Ecosystem::Homebrew => &self.homebrew.policy,
+            Ecosystem::Apt => &self.apt.policy,
         };
         Policy {
             install_hooks: o.install_hooks.unwrap_or(self.policy.install_hooks),
@@ -277,6 +312,56 @@ impl Config {
                 bail!(
                     "Homebrew requires 1-8 distinct supported platform tags and max_api_mb within 1-128"
                 );
+            }
+        }
+        if self.apt.enabled {
+            let policy = self.policy_for(Ecosystem::Apt);
+            if policy.min_monthly_downloads != 0 {
+                bail!(
+                    "APT monthly download evidence is unavailable; set [apt] min_monthly_downloads = 0"
+                );
+            }
+            if policy.install_hooks == crate::inspection::HookPolicy::Deny {
+                bail!(
+                    "APT install-hook enforcement is unavailable; set [apt] install_hooks = \"report\""
+                );
+            }
+            if self.apt.max_index_mb == 0
+                || self.apt.max_index_mb > 1024
+                || self.apt.repos.is_empty()
+                || self.apt.repos.len() > 32
+            {
+                bail!("APT requires 1-32 repositories and max_index_mb within 1-1024");
+            }
+            let mut names = std::collections::HashSet::new();
+            for repo in &self.apt.repos {
+                if !crate::registry::component(&repo.name) || !names.insert(&repo.name) {
+                    bail!("APT repository names must be unique route-safe components");
+                }
+                let u = url::Url::parse(&repo.url).context("invalid APT upstream URL")?;
+                if !(u.scheme() == "https" || self.upstream.allow_http && u.scheme() == "http")
+                    || u.host_str()
+                        .is_none_or(|h| !self.upstream.artifact_hosts.iter().any(|a| a == h))
+                    || !u.username().is_empty()
+                    || u.password().is_some()
+                    || u.query().is_some()
+                    || u.fragment().is_some()
+                {
+                    bail!(
+                        "APT upstream must use an allowed artifact host and HTTP(S) scheme without credentials, query, or fragment"
+                    );
+                }
+                for list in [&repo.suites, &repo.components, &repo.architectures] {
+                    if list.is_empty()
+                        || list.len() > 32
+                        || list.iter().collect::<std::collections::HashSet<_>>().len() != list.len()
+                        || list.iter().any(|v| !crate::registry::component(v))
+                    {
+                        bail!(
+                            "APT suites, components, and architectures require distinct route-safe values"
+                        );
+                    }
+                }
             }
         }
         Ok(())

@@ -236,7 +236,7 @@ pub async fn handle(
             (package, filename.to_string(), pip(file))
         }
         // Configuration validation rejects RubyGems hook denial; see the plan notes.
-        Ecosystem::Rubygems | Ecosystem::Homebrew => return Err(unsupported()),
+        Ecosystem::Rubygems | Ecosystem::Homebrew | Ecosystem::Apt => return Err(unsupported()),
     };
     let policy = app.config.policy_for(ecosystem).install_hooks;
     Ok(json_response(
