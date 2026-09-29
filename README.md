@@ -301,6 +301,11 @@ Tests use local HTTP fixtures and temporary SQLite databases. They cover age bou
 
 Registry-specific parsing, filtering, URL rewriting, and artifact lookup live in `src/registry/`. Shared policy, caching, downloads checks, and streaming live outside the adapters. To add RubyGems, add a registry adapter for its index protocols and gem downloads, connect its age/download evidence to the shared policy, and add client compatibility fixtures. No RubyGems endpoint currently claims support.
 
+The isolated [stats write benchmark](benchmarks/stats/README.md) compares SQLite,
+redb, and Fjall with atomic counters and recent-download indexes. Run it with
+`just bench-stats --help`; see the [measured results](docs/benchmarks/stats-write-benchmark.md)
+for throughput, latency, durability settings, and workload limitations.
+
 ## Protocol references
 
 - [npm package metadata](https://github.com/npm/registry/blob/main/docs/responses/package-metadata.md) and [download counts](https://github.com/npm/registry/blob/main/docs/download-counts.md)

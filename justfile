@@ -32,6 +32,10 @@ lint:
 test *args:
     cargo test --locked "$@"
 
+# Benchmark stats writes across SQLite, redb, and Fjall (isolated dependencies).
+bench-stats *args:
+    cargo run --release --locked --manifest-path benchmarks/stats/Cargo.toml -- "$@"
+
 # Run the proxy; optional arguments are passed to middles.
 run *args:
     cargo run --locked -- "$@"

@@ -1,4 +1,5 @@
 /target/
+/benchmarks/stats/target/
 /data/
 *.sqlite3
 *.sqlite3-shm
