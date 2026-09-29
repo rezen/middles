@@ -33,10 +33,19 @@ pub struct Homebrew {
     pub enabled: bool,
     #[serde(flatten)]
     pub policy: Override,
+    pub age_basis: HomebrewAgeBasis,
     pub registry: String,
     pub api: String,
     pub platforms: Vec<String>,
     pub max_api_mb: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HomebrewAgeBasis {
+    #[default]
+    LocalFirstSeen,
+    OciCreated,
 }
 
 impl Default for Homebrew {
@@ -44,6 +53,7 @@ impl Default for Homebrew {
         Self {
             enabled: false,
             policy: Override::default(),
+            age_basis: HomebrewAgeBasis::default(),
             registry: "https://ghcr.io".into(),
             api: "https://formulae.brew.sh/api".into(),
             platforms: vec!["arm64_tahoe".into()],

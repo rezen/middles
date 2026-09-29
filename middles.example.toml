@@ -27,10 +27,13 @@ min_monthly_downloads = 0
 install_hooks = "report"
 
 [homebrew]
-# Official stable core bottles only; disabled until explicitly opted in.
-enabled = false
-# Age is durable local first observation of verified bottle evidence.
-# min_age_days = 7
+# Official stable core bottles only. Set false to disable the adapter.
+enabled = true
+# No age wait; bottle signatures, digests and graph relationships are still checked.
+min_age_days = 0
+# To require age, set min_age_days > 0. The default basis is "local_first_seen";
+# this opt-in alternative uses the reported OCI build date as a heuristic:
+# age_basis = "oci_created"
 min_monthly_downloads = 0
 install_hooks = "report"
 # Only enable platforms you intend to serve. Real-client smoke: 7.0.6 on arm64 Tahoe.

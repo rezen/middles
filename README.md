@@ -128,6 +128,23 @@ python -m pip install --index-url http://127.0.0.1:8080/pip/simple/ requests
 
 Or set `PIP_INDEX_URL=http://127.0.0.1:8080/pip/simple/`. Use this as the sole index; an extra index is another resolution source. Modern JSON Simple API and HTML clients are supported, including hashes, `requires-python`, yanked flags, and PEP 658 core metadata. Policy applies to each individual uploaded file, including new wheels added to an older release. Files without upload times are hidden.
 
+uv works against the same Simple API. For the pip-compatible interface:
+
+```sh
+uv pip install --index-url http://127.0.0.1:8080/pip/simple/ requests
+```
+
+For project workflows (`uv add`, `uv lock`, `uv sync`), make the proxy the default index in `pyproject.toml`:
+
+```toml
+[[tool.uv.index]]
+name = "middles"
+url = "http://127.0.0.1:8080/pip/simple/"
+default = true
+```
+
+Keep `default = true` so the proxy replaces PyPI rather than becoming one more resolution source, and avoid extra `[[tool.uv.index]]` entries that resolve upstream directly. `UV_DEFAULT_INDEX=http://127.0.0.1:8080/pip/simple/` sets the same default for all uv commands (`UV_INDEX_URL` is its deprecated spelling). The per-file policy above applies unchanged; note that uv's local cache serves previously downloaded files without contacting the proxy, and existing `uv.lock` files pin the index URLs recorded at lock time, so regenerate lockfiles through the proxy.
+
 ### Composer 2
 
 Merge this into `composer.json`:
@@ -179,6 +196,7 @@ Enable the adapter explicitly:
 [homebrew]
 enabled = true
 platforms = ["arm64_tahoe"]
+age_basis = "oci_created" # Build-date heuristic; omit for strict local-first-seen age.
 min_monthly_downloads = 0
 install_hooks = "report"
 ```
@@ -191,12 +209,16 @@ export HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1
 brew install --force-bottle hello
 ```
 
-Age starts when middles first verifies a platform's bottle evidence. A fresh
-seven-day deployment blocks downloads, including dependencies, for seven days.
+By default, age starts when middles first verifies a platform's bottle evidence;
+a fresh seven-day deployment blocks downloads, including dependencies, for seven
+days. The opt-in `oci_created` basis uses the bottle's verified OCI build-date
+annotation, so already-old bottles can pass immediately. Build time is not a
+guaranteed publication time; with a positive age requirement, missing, malformed
+and future dates are denied. Set `[homebrew] min_age_days = 0` to disable Homebrew
+age checks entirely; verified bottle evidence is still required.
 Run `python3 scripts/homebrew-warm.py http://127.0.0.1:8080 zstd` to observe a
 formula's dependency closure without transferring bottles; retain the SQLite
-ledger across restarts. An explicit `min_age_days = 0` allows immediately verified
-bottles. Signed Homebrew API metadata stays upstream and unchanged.
+ledger across restarts. Signed Homebrew API metadata stays upstream and unchanged.
 
 The adapter serves only current stable official core bottles and their verified
 OCI metadata. Direct blobs, ranges and HEAD requests receive the same policy.

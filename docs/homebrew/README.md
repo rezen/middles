@@ -19,6 +19,7 @@ traffic that never reaches middles needs separate client and egress controls.
 enabled = true
 platforms = ["arm64_tahoe"]
 # Omit min_age_days to inherit [policy]. Default: 7.
+age_basis = "oci_created" # Opt-in build-age heuristic; default is "local_first_seen".
 min_monthly_downloads = 0
 install_hooks = "report"
 max_api_mb = 64
@@ -52,6 +53,10 @@ published rebuilds, and other client releases still need qualification. The
 adapter rechecks upgrade artifacts using the same routes and identity as installs;
 that is covered by deterministic rebuild/policy tests, not a real older-version
 upgrade claim.
+The [build-age smoke](build-age-smoke.md) also passed using
+Homebrew 7.0.7 source: at seven days, a forced cold `hello` fetch was denied with
+`local_first_seen` and allowed with `oci_created`. The signed API snapshot and
+official GHCR bottle were unchanged between those checks.
 
 Other accepted tags are `arm64_sequoia`, `arm64_sonoma`, `sequoia`, `sonoma`,
 `arm64_linux` and `x86_64_linux`. Enable only tags you intend to serve. Their
@@ -64,8 +69,22 @@ that never contacts it.
 
 ## Age and warming
 
-Age is **local first observation of verified bottle evidence**, not an upstream
-publication date. Identity binds the registry, canonical formula/repository,
+The default `age_basis = "local_first_seen"` measures from middles' durable first
+observation of verified bottle evidence. Opt in to `age_basis = "oci_created"` to
+measure from `org.opencontainers.image.created` on the selected OCI bottle
+manifest. This is Homebrew's reported **build date**, not proof of when that
+bottle became publicly available. Its value is part of the verified OCI graph,
+but it is supplied by the bottle producer and is not a registry upload time.
+With a positive age requirement, missing, malformed or future build dates deny
+access. The chosen basis appears in the warm response and age-denial message.
+HTTP `Last-Modified` and `Date` headers are never used for age decisions.
+
+To remove age as a Homebrew policy, set `[homebrew] min_age_days = 0` and restart
+middles. This bypasses both age bases, including build-date validation, while
+still requiring signed formula metadata and matching OCI digests. The warm
+response then reports `age_basis: "disabled"` and no eligibility time.
+
+Identity binds the registry, canonical formula/repository,
 version, formula revision, bottle rebuild, platform, selected child manifest,
 bottle checksum/config, and formula execution definition. The signed Ruby source
 checksum binds the definition; Ruby is never executed by middles. The bundled
@@ -77,12 +96,15 @@ platform's wait when its child and signed formula definition remain unchanged.
 The full Ruby source checksum is conservative: even a bottle-only edit to the
 formula file starts a new wait. Normalizing executable Ruby separately from its
 bottle stanza is deferred; no parser or formula execution is used to weaken this
-check. A changed child, bottle or definition establishes a new wait.
-Build timestamps, HTTP dates and the top-level index digest are not age evidence.
+check. A changed child, bottle or definition establishes a new local observation
+wait; `oci_created` reevaluates the new child's reported build date instead.
+The top-level index digest is not age evidence.
 
 A fresh deployment with seven days of minimum age blocks the dependency closure
-for seven days. Discovery indexes are returned unchanged without authorizing their
-children. Merely fetching an index does not start a wait: a bottle/config/child
+for seven days under `local_first_seen`. In `oci_created` mode, an already-old
+bottle can pass immediately after full verification. Discovery indexes are
+returned unchanged without authorizing their children. Merely fetching an index
+does not start a wait: a bottle/config/child
 request or the warming endpoint must verify evidence first. Denied artifact
 requests still record valid evidence. Unknown raw digests do not acquire an
 observation or authorize bytes. Zero days allows immediately **verified** evidence;
@@ -103,7 +125,9 @@ returns unavailable install-hook evidence explicitly. It only fetches bounded
 metadata and records observation; it neither downloads a bottle nor executes Ruby.
 Warm each dependency independently if a closure contains a formula with no bottle
 on the configured platforms. Start installs after the displayed eligibility time;
-ordinary retries age into eligibility at the inclusive `days * 86,400` boundary.
+ordinary retries age into eligibility at the inclusive `days * 86,400` boundary
+for either basis. `first_seen` remains recorded in both modes, so switching back
+to the strict basis restores its original wait rather than inheriting build age.
 
 ## Persistence and transport
 
@@ -112,7 +136,7 @@ backup API or stop middles before copying the database and WAL safely. Both
 `first_seen` and `homebrew_evidence` are durable, outside expiring response caches.
 Records contain associations and observation timestamps, not credentials or
 bottle archives. Cache eviction, expiry and restart do not erase waits. Losing
-observations restarts them. Never edit timestamps to make a bottle eligible.
+observations restarts local waits. Never edit timestamps to make a bottle eligible.
 
 Evidence is revalidated from current metadata on requests, subject to
 `cache.metadata_ttl_secs`; stale responses are never served after a failed

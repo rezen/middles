@@ -9,7 +9,11 @@ installation-wide enforcement. See the [usage guide](../homebrew/README.md),
 Linux/default-prefix CI and real-client upgrade/rebuild qualification remain open.
 Formula identity conservatively uses the full signed Ruby source checksum;
 bottle-only formula edits also reset waits until safe execution-only normalization
-is implemented.
+is implemented. The original strict local-first-observation age basis remains the
+default; `age_basis = "oci_created"` is an opt-in build-age heuristic for operators
+who accept that build time does not prove publication time.
+An explicit `[homebrew] min_age_days = 0` disables either age basis while retaining
+signed metadata and bottle relationship verification.
 
 
 ## Goal and first-release scope
@@ -65,7 +69,7 @@ Default the upstream to GHCR's official Homebrew namespace. Keep test-upstream o
 
 ## 3. Define release identity and age evidence
 
-Use **durable local first observation of verified bottle evidence** for the initial policy. Do not equate a formula's upstream release date, Git commit time, HTTP Last-Modified value, or an OCI build timestamp with bottle publication time. A reliable publication-time provider can be considered separately.
+Use **durable local first observation of verified bottle evidence** for the default policy. An opt-in `oci_created` mode uses the selected verified OCI manifest's build-date annotation as a weaker age heuristic. Do not equate a formula's upstream release date, Git commit time, HTTP Last-Modified value, or an OCI build timestamp with bottle publication time. A reliable publication-time provider can be considered separately.
 
 Record upstream, canonical formula/repository, version, formula revision, bottle rebuild, platform, selected per-platform child manifest digest, and bottle checksum. Key identity on the per-platform child evidence, never the top-level index digest: platform additions, other platforms' rebuilds, and annotation churn change the index digest and must not reset unrelated waits. Start the waiting period only after validating the metadata-to-artifact relationship. Define a stable identity over the policy-relevant formula definition and selected bottle evidence; exclude analytics and unrelated platform additions so they do not unnecessarily reset an existing bottle's wait. Changed formula execution metadata or bottle content must establish a new identity and waiting period.
 

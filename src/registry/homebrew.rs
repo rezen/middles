@@ -2,6 +2,7 @@
 use crate::{
     App,
     cache::RawMetadata,
+    config::HomebrewAgeBasis,
     error::{Error, Result},
     registry::{Ecosystem, oci},
     stats::Identity,
@@ -224,6 +225,11 @@ async fn dispatch(
             }
             let evidence = verify(app, &release, tag).await?;
             let first_seen = observe(app, &evidence).await?;
+            let age = if app.config.policy_for(Ecosystem::Homebrew).min_age_days == 0 {
+                None
+            } else {
+                Some(age_timestamp(app, &evidence, first_seen)?)
+            };
             dependencies.extend(
                 evidence.details["runtime_dependencies"]
                     .as_array()
@@ -232,7 +238,10 @@ async fn dispatch(
                     .filter_map(|d| d.as_str().map(str::to_owned)),
             );
             bottles.push(json!({"platform":tag,"identity":evidence.identity,"first_seen":first_seen,
-                "eligible_at": eligible_at(app, first_seen), "eligible":app.config.policy_for(Ecosystem::Homebrew).allows_timestamp(first_seen,Utc::now().timestamp())}));
+                "age_basis":age.map(|(_,basis)| basis).unwrap_or("disabled"),
+                "age_timestamp":age.map(|(timestamp,_)| timestamp),
+                "eligible_at":age.map(|(timestamp,_)| eligible_at(app, timestamp)),
+                "eligible":age.is_none_or(|(timestamp,_)| app.config.policy_for(Ecosystem::Homebrew).allows_timestamp(timestamp,Utc::now().timestamp()))}));
         }
         if bottles.is_empty() {
             return Err(Error::denied(
@@ -802,7 +811,8 @@ async fn verify(app: &App, r: &Release, tag: &str) -> Result<Evidence> {
     }
     let details = json!({"upstream":app.config.homebrew.registry,"formula":r.name,"repository":r.repo,"version":r.version,"revision":r.revision,
         "rebuild":r.rebuild,"platform":tag,"manifest":manifest.digest,"bottle":bottle,"config":config.digest,"size":layer.size,
-        "formula_definition":source,"version_scheme":r.info["version_scheme"],"cellar":file["cellar"],"runtime_dependencies":runtime_dependencies,"variation":r.info["variations"][tag],"dependencies":r.info["dependencies"],"uses_from_macos":r.info["uses_from_macos"],"uses_from_macos_bounds":r.info["uses_from_macos_bounds"]});
+        "formula_definition":source,"version_scheme":r.info["version_scheme"],"cellar":file["cellar"],"runtime_dependencies":runtime_dependencies,"variation":r.info["variations"][tag],"dependencies":r.info["dependencies"],"uses_from_macos":r.info["uses_from_macos"],"uses_from_macos_bounds":r.info["uses_from_macos_bounds"],
+        "oci_created":child.annotations.get("org.opencontainers.image.created")});
     let hash = oci::digest(&serde_json::to_vec(&details).unwrap());
     let identity = format!("homebrew:{hash}");
     let release = format!("{}-rebuild.{}@{tag}:{}", r.version, r.rebuild, hash);
@@ -824,22 +834,46 @@ async fn observe(app: &App, e: &Evidence) -> Result<i64> {
         )
         .await
 }
-fn eligible_at(app: &App, first_seen: i64) -> i64 {
-    first_seen
+fn eligible_at(app: &App, timestamp: i64) -> i64 {
+    timestamp
         .saturating_add(i64::from(app.config.policy_for(Ecosystem::Homebrew).min_age_days) * 86_400)
+}
+fn age_timestamp(app: &App, e: &Evidence, first_seen: i64) -> Result<(i64, &'static str)> {
+    match app.config.homebrew.age_basis {
+        HomebrewAgeBasis::LocalFirstSeen => Ok((first_seen, "local_first_seen")),
+        HomebrewAgeBasis::OciCreated => {
+            let created = e.details["oci_created"]
+                .as_str()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.timestamp())
+                .ok_or_else(|| {
+                    Error::denied("missing or invalid verified OCI bottle build date")
+                })?;
+            if created > Utc::now().timestamp() {
+                return Err(Error::denied(
+                    "verified OCI bottle build date is in the future",
+                ));
+            }
+            Ok((created, "oci_created"))
+        }
+    }
 }
 async fn authorize(app: &App, e: &Evidence) -> Result<()> {
     let first_seen = observe(app, e).await?;
+    if app.config.policy_for(Ecosystem::Homebrew).min_age_days == 0 {
+        return Ok(());
+    }
+    let (timestamp, basis) = age_timestamp(app, e, first_seen)?;
     if !app
         .config
         .policy_for(Ecosystem::Homebrew)
-        .allows_timestamp(first_seen, Utc::now().timestamp())
+        .allows_timestamp(timestamp, Utc::now().timestamp())
     {
-        let time = chrono::DateTime::from_timestamp(eligible_at(app, first_seen), 0)
+        let time = chrono::DateTime::from_timestamp(eligible_at(app, timestamp), 0)
             .map(|t| t.to_rfc3339())
-            .unwrap_or_else(|| eligible_at(app, first_seen).to_string());
+            .unwrap_or_else(|| eligible_at(app, timestamp).to_string());
         return Err(Error::denied(format!(
-            "{}: bottle {} first observed locally at {first_seen}; minimum age policy; eligible at {time}",
+            "{}: bottle {} age basis {basis} at {timestamp}; minimum age policy; eligible at {time}",
             e.details["formula"].as_str().unwrap_or("formula"),
             e.details["platform"].as_str().unwrap_or("platform")
         )));

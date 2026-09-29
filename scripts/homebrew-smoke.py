@@ -104,7 +104,7 @@ def main():
                     process.wait()
                 process = None
 
-        def start(days):
+        def start(days, age_basis="local_first_seen"):
             nonlocal process
             stop()
             config.write_text(f'''listen = "127.0.0.1:{port}"
@@ -112,6 +112,7 @@ public_url = "{origin}"
 [homebrew]
 enabled = true
 min_age_days = {days}
+age_basis = "{age_basis}"
 platforms = ["{args.api_tag}"]
 api = "http://127.0.0.1:{api_server.server_port}/api"
 [cache]
@@ -154,6 +155,8 @@ path = {json.dumps(str(database))}
             start(7)
             client("fully-cached-fetch", ["fetch", "--force-bottle", "hello"], True)
             client("restart-cold-bottle-denied", ["fetch", "--force", "--force-bottle", "hello"], False)
+            start(7, "oci_created")
+            client("old-bottle-build-age-eligible", ["fetch", "--force", "--force-bottle", "hello"], True)
             if any(not json.loads(line)["allowed"] for line in egress.read_text().splitlines()):
                 raise AssertionError("client attempted an upstream curl destination")
             report["result"] = "PASS"
@@ -165,7 +168,7 @@ path = {json.dumps(str(database))}
             log.close()
             report.setdefault("result", "FAIL")
             (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-    print("PASS: signed API, bottle checksums, dependency installs, denials, restart policy, statistics, and cache limitation")
+    print("PASS: signed API, bottle checksums, dependency installs, denials, both age bases, restart policy, statistics, and cache limitation")
 
 
 if __name__ == "__main__":

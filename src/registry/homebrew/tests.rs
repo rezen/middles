@@ -63,6 +63,19 @@ fn graph(rebuild: u64, platforms: &[&str]) -> Graph {
     graph_with_content(rebuild, platforms, 0)
 }
 fn graph_with_content(rebuild: u64, platforms: &[&str], content_revision: u32) -> Graph {
+    graph_with_created(
+        rebuild,
+        platforms,
+        content_revision,
+        Some("2026-01-01T00:00:00Z"),
+    )
+}
+fn graph_with_created(
+    rebuild: u64,
+    platforms: &[&str],
+    content_revision: u32,
+    created: Option<&str>,
+) -> Graph {
     let mut objects = BTreeMap::new();
     let mut files = serde_json::Map::new();
     let mut descriptors = Vec::new();
@@ -83,7 +96,10 @@ fn graph_with_content(rebuild: u64, platforms: &[&str], content_revision: u32) -
                 format!(".{rebuild}")
             }
         );
-        let annotations = json!({"com.github.package.type":"homebrew_bottle","org.opencontainers.image.ref.name":reference,"sh.brew.bottle.digest":checksum.trim_start_matches("sha256:"),"sh.brew.tab":"{}"});
+        let mut annotations = json!({"com.github.package.type":"homebrew_bottle","org.opencontainers.image.ref.name":reference,"sh.brew.bottle.digest":checksum.trim_start_matches("sha256:"),"sh.brew.tab":"{}"});
+        if let Some(created) = created {
+            annotations["org.opencontainers.image.created"] = json!(created);
+        }
         let child = serde_json::to_vec(&json!({"schemaVersion":2,"config":{"mediaType":oci::CONFIG,"digest":config,"size":cfg.len()},"layers":[{"mediaType":LAYER,"digest":checksum,"size":bottle.len()}],"annotations":annotations})).unwrap();
         let child_digest = oci::digest(&child);
         descriptors.push(json!({"mediaType":oci::MANIFEST,"digest":child_digest,"size":child.len(),"platform":{"architecture":architecture,"os":os},"annotations":annotations}));
@@ -453,6 +469,90 @@ async fn observation_and_associations_survive_restart_and_policy_changes() {
 }
 
 #[tokio::test]
+async fn opt_in_oci_build_age_allows_old_verified_bottle_without_aging_local_ledger() {
+    let mut f = fixture(7, false, &["arm64_tahoe"], 300).await;
+    Arc::get_mut(&mut f.app.config).unwrap().homebrew.age_basis = HomebrewAgeBasis::OciCreated;
+    let path = blob(&f, "arm64_tahoe");
+    assert_eq!(
+        request(&f.app, &path, Method::GET, &[]).await.0,
+        StatusCode::OK
+    );
+    let (status, _, body) = request(&f.app, "/homebrew/warm/tool", Method::GET, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    let warm: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(warm["bottles"][0]["age_basis"], "oci_created");
+    assert_eq!(warm["bottles"][0]["eligible"], true);
+    assert_eq!(ledger(&f.app).await, 1);
+
+    // Switching back to strict local age cannot reuse the old build timestamp.
+    let mut config = (*f.app.config).clone();
+    config.homebrew.age_basis = HomebrewAgeBasis::LocalFirstSeen;
+    let mut strict = App::new(config).await.unwrap();
+    strict.homebrew_key = TEST_PUBLIC;
+    let (status, _, body) = request(&strict, &path, Method::GET, &[]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        String::from_utf8(body)
+            .unwrap()
+            .contains("local_first_seen")
+    );
+}
+
+#[tokio::test]
+async fn oci_build_age_rejects_recent_missing_invalid_and_future_dates() {
+    let recent = Utc::now().to_rfc3339();
+    for (created, days) in [
+        (Some(recent.as_str()), 7),
+        (None, 7),
+        (Some("not-a-date"), 7),
+        (Some("9999-01-01T00:00:00Z"), 7),
+    ] {
+        let mut f = fixture(days, false, &["arm64_tahoe"], 300).await;
+        Arc::get_mut(&mut f.app.config).unwrap().homebrew.age_basis = HomebrewAgeBasis::OciCreated;
+        *f.state.graph.write().unwrap() = graph_with_created(0, &["arm64_tahoe"], 0, created);
+        let path = blob(&f, "arm64_tahoe");
+        let (status, _, body) = request(&f.app, &path, Method::GET, &[]).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        assert_eq!(ledger(&f.app).await, 1);
+        assert!(
+            !f.state
+                .hits
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(p, _, _)| p.ends_with(path.rsplit('/').next().unwrap()))
+        );
+    }
+}
+
+#[tokio::test]
+async fn zero_homebrew_age_disables_both_age_bases_without_weakening_graph_checks() {
+    for basis in [
+        HomebrewAgeBasis::LocalFirstSeen,
+        HomebrewAgeBasis::OciCreated,
+    ] {
+        let mut f = fixture(0, false, &["arm64_tahoe"], 300).await;
+        Arc::get_mut(&mut f.app.config).unwrap().homebrew.age_basis = basis;
+        *f.state.graph.write().unwrap() = graph_with_created(0, &["arm64_tahoe"], 0, None);
+        let path = blob(&f, "arm64_tahoe");
+        assert_eq!(
+            request(&f.app, &path, Method::GET, &[]).await.0,
+            StatusCode::OK
+        );
+        let (_, _, body) = request(&f.app, "/homebrew/warm/tool", Method::GET, &[]).await;
+        let warm: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(warm["bottles"][0]["age_basis"], "disabled");
+        assert!(warm["bottles"][0]["eligible_at"].is_null());
+        assert_eq!(warm["bottles"][0]["eligible"], true);
+    }
+}
+
+#[tokio::test]
 async fn platform_additions_do_not_reset_waits_but_rebuilds_and_definitions_do() {
     let f = fixture(7, false, &["arm64_tahoe", "arm64_linux"], 1).await;
     // Initially Linux is absent even though the operator has enabled its tag.
@@ -526,6 +626,13 @@ async fn changed_bottle_content_cannot_reuse_an_old_wait() {
 
 #[test]
 fn unsupported_inherited_policies_only_validate_when_enabled() {
+    let parsed: crate::config::Config =
+        toml::from_str("[homebrew]\nage_basis = 'oci_created'\n").unwrap();
+    assert_eq!(parsed.homebrew.age_basis, HomebrewAgeBasis::OciCreated);
+    assert!(
+        toml::from_str::<crate::config::Config>("[homebrew]\nage_basis = 'last_modified'\n")
+            .is_err()
+    );
     let mut cfg = crate::config::Config::default();
     cfg.policy.min_monthly_downloads = 1;
     cfg.rubygems.min_monthly_downloads = Some(0);

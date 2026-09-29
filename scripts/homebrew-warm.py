@@ -48,7 +48,7 @@ def main():
             if not isinstance(dependencies, list) or len(dependencies) > 1000 or any(not isinstance(d, str) or not valid.fullmatch(d) for d in dependencies):
                 raise ValueError("invalid dependency response")
             for bottle in data["bottles"]:
-                print(f'{formula} {bottle["platform"]}: eligible={bottle["eligible"]}, eligible_at={bottle["eligible_at"]}', flush=True)
+                print(f'{formula} {bottle["platform"]}: age_basis={bottle["age_basis"]}, eligible={bottle["eligible"]}, eligible_at={bottle["eligible_at"]}', flush=True)
             pending.extend(dependencies)
         except (urllib.error.URLError, ValueError, KeyError) as error:
             failed.append(formula)
