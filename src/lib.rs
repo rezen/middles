@@ -20,6 +20,7 @@ use chrono::Utc;
 use config::Config;
 use error::{Error, Result};
 use futures_util::{StreamExt, stream};
+use registry::Ecosystem;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
@@ -31,7 +32,10 @@ pub struct App {
     pub store: Store,
     client: reqwest::Client,
     artifact_client: reqwest::Client,
-    permits: Arc<Semaphore>,
+    // Archive streams hold a permit for the whole client transfer, so they get
+    // their own pool; slow downloads must not starve metadata resolution.
+    metadata_permits: Arc<Semaphore>,
+    artifact_permits: Arc<Semaphore>,
 }
 
 impl App {
@@ -53,7 +57,8 @@ impl App {
             .build()?;
         let store = Store::open(config.cache.clone()).await?;
         Ok(Self {
-            permits: Arc::new(Semaphore::new(config.upstream.concurrency)),
+            metadata_permits: Arc::new(Semaphore::new(config.upstream.concurrency)),
+            artifact_permits: Arc::new(Semaphore::new(config.upstream.concurrency)),
             config: Arc::new(config),
             store,
             client,
@@ -113,7 +118,7 @@ impl App {
 
     async fn fetch_metadata(&self, url: &str, accept: &str) -> Result<Vec<u8>> {
         let _permit = self
-            .permits
+            .metadata_permits
             .acquire()
             .await
             .map_err(|_| Error::internal("shutdown"))?;
@@ -146,35 +151,38 @@ impl App {
         }
         Ok(body)
     }
-    pub async fn check_downloads(&self, ecosystem: &str, package: &str) -> Result<()> {
+    pub async fn check_downloads(&self, ecosystem: Ecosystem, package: &str) -> Result<()> {
         let minimum = self.config.policy_for(ecosystem).min_monthly_downloads;
         if minimum == 0 {
             return Ok(());
         }
         let u = &self.config.upstream;
         let (url, pointer) = match ecosystem {
-            "npm" => (
+            Ecosystem::Npm => (
                 format!(
                     "{}/downloads/point/last-month/{package}",
                     u.npm_stats.trim_end_matches('/')
                 ),
                 "/downloads",
             ),
-            "pip" => (
+            Ecosystem::Pip => (
                 format!(
                     "{}/api/packages/{package}/recent",
                     u.pypi_stats.trim_end_matches('/')
                 ),
                 "/data/last_month",
             ),
-            "composer" => (
+            Ecosystem::Composer => (
                 format!(
                     "{}/packages/{package}/stats.json",
                     u.composer_stats.trim_end_matches('/')
                 ),
                 "/downloads/monthly",
             ),
-            _ => return Err(Error::bad("unknown ecosystem")),
+            // Configuration validation rejects a nonzero RubyGems threshold.
+            Ecosystem::Rubygems => {
+                return Err(Error::internal("no RubyGems download evidence provider"));
+            }
         };
         let stats = self.metadata(url, "application/json", true).await?;
         let count = stats
@@ -192,7 +200,7 @@ impl App {
     }
     pub fn artifact_url(
         &self,
-        ecosystem: &str,
+        ecosystem: Ecosystem,
         package: &str,
         release: &str,
         filename: &str,
@@ -235,7 +243,7 @@ impl App {
         identity: Option<stats::Identity>,
     ) -> Result<Response> {
         let permit = self
-            .permits
+            .artifact_permits
             .clone()
             .acquire_owned()
             .await
@@ -352,19 +360,24 @@ async fn artifact(
     };
     let package = decode(package)?;
     let release = decode(release)?;
-    let url = match ecosystem.as_str() {
-        "npm" => registry::npm::artifact(&app, &package, &release, Utc::now()).await?,
-        "pip" => registry::pip::artifact(&app, &package, &release, &filename, Utc::now()).await?,
-        "composer" => registry::composer::artifact(&app, &package, &release).await?,
-        _ => return Err(Error::bad("unknown ecosystem")),
+    let ecosystem = Ecosystem::parse(&ecosystem)?;
+    let url = match ecosystem {
+        Ecosystem::Npm => registry::npm::artifact(&app, &package, &release, Utc::now()).await?,
+        Ecosystem::Pip => {
+            registry::pip::artifact(&app, &package, &release, &filename, Utc::now()).await?
+        }
+        Ecosystem::Composer => registry::composer::artifact(&app, &package, &release).await?,
+        Ecosystem::Rubygems => {
+            return Err(Error::bad("gem archives are served from /rubygems/gems"));
+        }
     };
-    let package = if ecosystem == "pip" {
+    let package = if ecosystem == Ecosystem::Pip {
         registry::pip::normalize(&package)?
     } else {
         package
     };
     let identity = (method == Method::GET
-        && !(ecosystem == "pip" && filename.ends_with(".metadata")))
-    .then(|| stats::Identity::new(&ecosystem, &package, &release));
+        && !(ecosystem == Ecosystem::Pip && filename.ends_with(".metadata")))
+    .then(|| stats::Identity::new(ecosystem, &package, &release));
     app.stream_download(&url, headers, identity).await
 }

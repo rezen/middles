@@ -5,6 +5,7 @@ use crate::{
     App,
     error::{Error, Result},
     policy::Policy,
+    registry::Ecosystem,
     stats::Identity,
 };
 use axum::{
@@ -13,11 +14,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
+use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashSet};
 
 const MAX_NAMES: usize = 100;
 const MAX_CANDIDATES: usize = 8;
+const CONCURRENT_INFO_FETCHES: usize = 8;
 
 fn name_valid(name: &str) -> bool {
     !name.is_empty()
@@ -159,13 +162,21 @@ pub async fn dependencies(
             "RubyGems requests require at most 100 valid gem names",
         ));
     }
-    let policy = app.config.policy_for("rubygems");
+    let policy = app.config.policy_for(Ecosystem::Rubygems);
     let now = Utc::now();
     let max = app.config.upstream.max_metadata_mb * 1024 * 1024;
+    // Fetch per-gem info concurrently within the shared upstream permit pool;
+    // sorted names and an ordered buffer keep the response deterministic.
+    let app = &app;
+    let fetches: Vec<_> = names
+        .into_iter()
+        .map(|name| async move { (name, raw(app, name).await) })
+        .collect();
+    let mut fetched = stream::iter(fetches).buffered(CONCURRENT_INFO_FETCHES);
     let mut entries = Vec::new();
     let mut count = 0;
-    for name in names {
-        let data = match raw(&app, name).await {
+    while let Some((name, data)) = fetched.next().await {
+        let data = match data {
             Ok(data) => data,
             Err(e) if e.0 == StatusCode::NOT_FOUND => continue,
             Err(e) => return Err(e),
@@ -263,7 +274,7 @@ async fn authorize(app: &App, stem: &str, now: DateTime<Utc>) -> Result<(String,
     if candidates.is_empty() || candidates.len() > MAX_CANDIDATES {
         return Err(Error::bad("invalid or overly ambiguous gem filename"));
     }
-    let policy: Policy = app.config.policy_for("rubygems");
+    let policy: Policy = app.config.policy_for(Ecosystem::Rubygems);
     let mut selected = None;
     for (name, identity) in candidates {
         let data = match raw(app, name).await {
@@ -319,7 +330,8 @@ pub async fn download(
         "{}/gems/{filename}",
         app.config.upstream.rubygems.trim_end_matches('/')
     );
-    let identity = (method == Method::GET).then(|| Identity::new("rubygems", &name, &release));
+    let identity =
+        (method == Method::GET).then(|| Identity::new(Ecosystem::Rubygems, &name, &release));
     app.stream_download(&url, headers, identity).await
 }
 

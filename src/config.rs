@@ -1,4 +1,5 @@
 use crate::policy::Policy;
+use crate::registry::Ecosystem;
 use anyhow::{Context, bail};
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf};
@@ -108,13 +109,12 @@ impl Default for Upstream {
     }
 }
 impl Config {
-    pub fn policy_for(&self, ecosystem: &str) -> Policy {
+    pub fn policy_for(&self, ecosystem: Ecosystem) -> Policy {
         let o = match ecosystem {
-            "npm" => &self.npm,
-            "pip" => &self.pip,
-            "composer" => &self.composer,
-            "rubygems" => &self.rubygems,
-            _ => unreachable!(),
+            Ecosystem::Npm => &self.npm,
+            Ecosystem::Pip => &self.pip,
+            Ecosystem::Composer => &self.composer,
+            Ecosystem::Rubygems => &self.rubygems,
         };
         Policy {
             install_hooks: o.install_hooks.unwrap_or(self.policy.install_hooks),
@@ -175,7 +175,7 @@ impl Config {
                 );
             }
         }
-        let ruby = self.policy_for("rubygems");
+        let ruby = self.policy_for(Ecosystem::Rubygems);
         if ruby.min_monthly_downloads != 0 {
             bail!(
                 "RubyGems monthly download evidence is unavailable; set [rubygems] min_monthly_downloads = 0"

@@ -37,6 +37,7 @@ stats_ttl_secs = 86400
 [upstream]
 # rubygems = "https://rubygems.org"
 timeout_secs = 60
+# Permits per upstream pool; metadata fetches and archive streams have separate pools.
 concurrency = 32
 max_metadata_mb = 32
 # Add exact archive hosts only when needed. Every redirect is checked too.

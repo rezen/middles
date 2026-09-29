@@ -3,6 +3,7 @@ use crate::{
     error::{Error, Result},
     json_response,
     policy::Policy,
+    registry::Ecosystem,
 };
 use axum::{
     extract::{Path, State},
@@ -78,13 +79,13 @@ pub async fn handle(
 ) -> Result<Response> {
     let package = normalize(&name)?;
     let raw = raw(&app, &package).await?;
-    app.check_downloads("pip", &package).await?;
-    let mut doc = filter(&raw, &app.config.policy_for("pip"), Utc::now())?;
+    app.check_downloads(Ecosystem::Pip, &package).await?;
+    let mut doc = filter(&raw, &app.config.policy_for(Ecosystem::Pip), Utc::now())?;
     for file in doc["files"].as_array_mut().unwrap() {
         let name = file["filename"]
             .as_str()
             .ok_or_else(|| Error::upstream("file missing filename"))?;
-        file["url"] = json!(app.artifact_url("pip", &package, name, name));
+        file["url"] = json!(app.artifact_url(Ecosystem::Pip, &package, name, name));
     }
     if headers
         .get("accept")
@@ -117,7 +118,7 @@ pub async fn artifact(
 ) -> Result<String> {
     let package = normalize(package)?;
     let raw = raw(app, &package).await?;
-    app.check_downloads("pip", &package).await?;
+    app.check_downloads(Ecosystem::Pip, &package).await?;
     let api = raw
         .pointer("/meta/api-version")
         .and_then(Value::as_str)
@@ -131,7 +132,7 @@ pub async fn artifact(
         .iter()
         .find(|f| f["filename"].as_str() == Some(filename))
         .ok_or_else(|| Error::denied("Python file is not eligible"))?;
-    if app.config.policy_for("pip").install_hooks == crate::inspection::HookPolicy::Deny
+    if app.config.policy_for(Ecosystem::Pip).install_hooks == crate::inspection::HookPolicy::Deny
         && crate::inspection::pip(file).dependency_execution
     {
         return Err(Error::denied(
@@ -140,7 +141,7 @@ pub async fn artifact(
     }
     if !app
         .config
-        .policy_for("pip")
+        .policy_for(Ecosystem::Pip)
         .allows_time(file["upload-time"].as_str(), now)
     {
         return Err(Error::denied("Python file is not eligible"));

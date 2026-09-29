@@ -4,6 +4,7 @@ use crate::{
     cache::Store,
     error::{Error, Result},
     json_response,
+    registry::Ecosystem,
 };
 use axum::{
     extract::{Query, State},
@@ -22,9 +23,9 @@ pub(crate) struct Identity {
 }
 
 impl Identity {
-    pub(crate) fn new(ecosystem: &str, package: &str, release: &str) -> Self {
+    pub(crate) fn new(ecosystem: Ecosystem, package: &str, release: &str) -> Self {
         Self {
-            ecosystem: ecosystem.into(),
+            ecosystem: ecosystem.as_str().into(),
             package: package.into(),
             release: release.into(),
         }
@@ -52,15 +53,11 @@ pub(crate) async fn handle(
     if query.limit == 0 || query.limit > 1000 {
         return Err(Error::bad("limit must be between 1 and 1000"));
     }
-    if let Some(ecosystem) = &query.ecosystem {
-        if !matches!(ecosystem.as_str(), "npm" | "pip" | "composer" | "rubygems") {
-            return Err(Error::bad("unknown ecosystem"));
-        }
-        if ecosystem == "pip"
-            && let Some(package) = &query.package
-        {
-            query.package = Some(crate::registry::pip::normalize(package)?);
-        }
+    if let Some(ecosystem) = &query.ecosystem
+        && Ecosystem::parse(ecosystem)? == Ecosystem::Pip
+        && let Some(package) = &query.package
+    {
+        query.package = Some(crate::registry::pip::normalize(package)?);
     }
     let report = app.store.download_stats(query).await?;
     Ok(json_response(report, "application/json"))
@@ -217,7 +214,7 @@ mod tests {
                 .stream_download(
                     &format!("{origin}/{endpoint}"),
                     Default::default(),
-                    Some(Identity::new("npm", "test", endpoint)),
+                    Some(Identity::new(Ecosystem::Npm, "test", endpoint)),
                 )
                 .await
                 .unwrap();

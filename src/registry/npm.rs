@@ -3,7 +3,7 @@ use crate::{
     error::{Error, Result},
     json_response,
     policy::Policy,
-    registry::npm_name,
+    registry::{Ecosystem, npm_name},
 };
 use axum::{
     extract::{Path, State},
@@ -86,8 +86,8 @@ pub async fn handle(
 ) -> Result<Response> {
     let (package, suffix) = split_path(&path)?;
     let raw = raw(&app, package).await?;
-    app.check_downloads("npm", package).await?;
-    let mut doc = filter(&raw, &app.config.policy_for("npm"), Utc::now())?;
+    app.check_downloads(Ecosystem::Npm, package).await?;
+    let mut doc = filter(&raw, &app.config.policy_for(Ecosystem::Npm), Utc::now())?;
     if let Some(filename) = suffix.strip_prefix("-/") {
         // npm lockfiles may refer to the conventional registry tarball path.
         let (version, url) = doc["versions"]
@@ -105,8 +105,8 @@ pub async fn handle(
                     .is_some_and(|u| u.path().rsplit('/').next() == Some(filename))
             })
             .ok_or_else(|| Error::denied("tarball does not belong to an eligible npm version"))?;
-        let identity =
-            (method == Method::GET).then(|| crate::stats::Identity::new("npm", package, version));
+        let identity = (method == Method::GET)
+            .then(|| crate::stats::Identity::new(Ecosystem::Npm, package, version));
         return app.stream_download(url, headers, identity).await;
     }
     for (version, info) in doc["versions"].as_object_mut().unwrap() {
@@ -115,7 +115,7 @@ pub async fn handle(
         {
             dist.insert(
                 "tarball".into(),
-                json!(app.artifact_url("npm", package, version, "package.tgz")),
+                json!(app.artifact_url(Ecosystem::Npm, package, version, "package.tgz")),
             );
         }
     }
@@ -139,18 +139,18 @@ pub async fn artifact(
     now: DateTime<Utc>,
 ) -> Result<String> {
     let raw = raw(app, package).await?;
-    app.check_downloads("npm", package).await?;
+    app.check_downloads(Ecosystem::Npm, package).await?;
     let info = raw["versions"]
         .get(version)
         .ok_or_else(|| Error::denied("npm artifact is not eligible"))?;
-    if app.config.policy_for("npm").install_hooks == crate::inspection::HookPolicy::Deny
+    if app.config.policy_for(Ecosystem::Npm).install_hooks == crate::inspection::HookPolicy::Deny
         && crate::inspection::npm(info).dependency_execution
     {
         return Err(Error::denied("npm artifact blocked by install-hook policy"));
     }
     if !app
         .config
-        .policy_for("npm")
+        .policy_for(Ecosystem::Npm)
         .allows_time(raw["time"].get(version).and_then(Value::as_str), now)
     {
         return Err(Error::denied("npm artifact is not eligible"));

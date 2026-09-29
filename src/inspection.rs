@@ -3,6 +3,7 @@ use crate::{
     App,
     error::{Error, Result},
     json_response, registry,
+    registry::Ecosystem,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -179,8 +180,10 @@ pub async fn handle(
     Path((ecosystem, package)): Path<(String, String)>,
     Query(selection): Query<Selection>,
 ) -> Result<Response> {
-    let (package, selected, report) = match ecosystem.as_str() {
-        "npm" => {
+    let unsupported = || Error::bad("unsupported inspection ecosystem");
+    let ecosystem = Ecosystem::parse(&ecosystem).map_err(|_| unsupported())?;
+    let (package, selected, report) = match ecosystem {
+        Ecosystem::Npm => {
             let version = exact_version(&selection)?;
             let raw = registry::npm::raw(&app, &package).await?;
             let info = raw["versions"]
@@ -188,7 +191,7 @@ pub async fn handle(
                 .ok_or_else(|| Error::missing("npm version not found"))?;
             (package, version.to_string(), npm(info))
         }
-        "composer" => {
+        Ecosystem::Composer => {
             let version = exact_version(&selection)?;
             registry::composer_name(&package)?;
             let suffix = if version.starts_with("dev-") || version.ends_with("-dev") {
@@ -213,7 +216,7 @@ pub async fn handle(
                 .ok_or_else(|| Error::missing("Composer version not found"))?;
             (package, version.to_string(), composer(info))
         }
-        "pip" => {
+        Ecosystem::Pip => {
             if selection.version.is_some() {
                 return Err(Error::bad("pip inspection requires filename, not version"));
             }
@@ -232,12 +235,13 @@ pub async fn handle(
                 .ok_or_else(|| Error::missing("Python file not found"))?;
             (package, filename.to_string(), pip(file))
         }
-        _ => return Err(Error::bad("unsupported inspection ecosystem")),
+        // Configuration validation rejects RubyGems hook denial; see the plan notes.
+        Ecosystem::Rubygems => return Err(unsupported()),
     };
-    let policy = app.config.policy_for(&ecosystem).install_hooks;
+    let policy = app.config.policy_for(ecosystem).install_hooks;
     Ok(json_response(
         json!({
-            "ecosystem": ecosystem, "package": package, "selection": selected,
+            "ecosystem": ecosystem.as_str(), "package": package, "selection": selected,
             "inspection": report,
             "hook_policy": policy,
             "blocked_by_hook_policy": policy == HookPolicy::Deny && report.dependency_execution,

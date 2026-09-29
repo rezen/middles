@@ -2,7 +2,7 @@ use crate::{
     App,
     error::{Error, Result},
     json_response,
-    registry::composer_name,
+    registry::{Ecosystem, composer_name},
 };
 use axum::{
     extract::{Path, State},
@@ -69,7 +69,7 @@ async fn eligible(app: &App, package: &str, dev: bool) -> Result<Vec<Value>> {
             false,
         )
         .await?;
-    app.check_downloads("composer", package).await?;
+    app.check_downloads(Ecosystem::Composer, package).await?;
     let versions = expand(&raw, package)?;
     let keys = versions
         .iter()
@@ -90,7 +90,7 @@ async fn eligible(app: &App, package: &str, dev: bool) -> Result<Vec<Value>> {
         .collect();
     let seen = app.store.observe(keys).await?;
     let now = Utc::now();
-    let policy = app.config.policy_for("composer");
+    let policy = app.config.policy_for(Ecosystem::Composer);
     Ok(versions
         .into_iter()
         .zip(seen)
@@ -137,7 +137,7 @@ pub async fn handle(State(app): State<App>, Path(path): Path<String>) -> Result<
         if let Some(dist) = info.get_mut("dist").and_then(Value::as_object_mut) {
             dist.insert(
                 "url".into(),
-                json!(app.artifact_url("composer", package, &version, "archive.zip")),
+                json!(app.artifact_url(Ecosystem::Composer, package, &version, "archive.zip")),
             );
             dist.remove("mirrors");
         }

@@ -5,6 +5,41 @@ pub mod rubygems;
 
 use crate::error::{Error, Result};
 
+/// Every supported ecosystem, so dispatch sites cannot silently miss one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ecosystem {
+    Npm,
+    Pip,
+    Composer,
+    Rubygems,
+}
+
+impl Ecosystem {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "npm" => Ok(Self::Npm),
+            "pip" => Ok(Self::Pip),
+            "composer" => Ok(Self::Composer),
+            "rubygems" => Ok(Self::Rubygems),
+            _ => Err(Error::bad("unknown ecosystem")),
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::Pip => "pip",
+            Self::Composer => "composer",
+            Self::Rubygems => "rubygems",
+        }
+    }
+}
+
+impl std::fmt::Display for Ecosystem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 pub fn component(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 214
