@@ -1,6 +1,8 @@
 # middles
 
-A focused Rust registry proxy for npm, pip/PyPI, Composer 2, and RubyGems through Bundler. It filters out releases younger than your policy allows, optionally requires a minimum monthly download count where evidence is available, and rechecks policy when serving package archives. A [Docker registry proxy](docs/plans/docker-registry-proxy.md) is planned.
+A focused Rust registry proxy for npm, pip/PyPI, Composer 2, RubyGems through Bundler, and opt-in official Homebrew bottles. It filters out releases younger than your policy allows, optionally requires a minimum monthly download count where evidence is available, and rechecks policy when serving package archives. A [Docker registry proxy](docs/plans/docker-registry-proxy.md) is planned.
+
+Homebrew support is disabled by default and enforces policy on official stable bottle requests that reach middles. Source downloads and client caches can bypass it; see the [Homebrew guide](docs/homebrew/README.md) and [recorded compatibility checks](docs/homebrew/compatibility.md).
 
 One binary, no external database or background registry crawl. Tokio + Axum serve requests, reqwest pools upstream connections, Moka holds hot metadata, and SQLite persists metadata and download statistics locally. Archives stream with backpressure and are not stored or buffered in full.
 
@@ -169,6 +171,44 @@ install_hooks = "report"
 
 `report` does not inspect gem contents or establish that installation is free of code execution; native extensions may run build code. There is currently no `/inspect/rubygems/` endpoint. The adapter never evaluates Ruby gemspecs or deserializes upstream Marshal objects itself. See the [implementation notes and remaining work](docs/plans/rubygems-support.md).
 
+### Homebrew bottles
+
+Enable the adapter explicitly:
+
+```toml
+[homebrew]
+enabled = true
+platforms = ["arm64_tahoe"]
+min_monthly_downloads = 0
+install_hooks = "report"
+```
+
+For the tested Homebrew 7.0.6 client, with portable Ruby already provisioned:
+
+```sh
+export HOMEBREW_ARTIFACT_DOMAIN=http://127.0.0.1:8080/homebrew
+export HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1
+brew install --force-bottle hello
+```
+
+Age starts when middles first verifies a platform's bottle evidence. A fresh
+seven-day deployment blocks downloads, including dependencies, for seven days.
+Run `python3 scripts/homebrew-warm.py http://127.0.0.1:8080 zstd` to observe a
+formula's dependency closure without transferring bottles; retain the SQLite
+ledger across restarts. An explicit `min_age_days = 0` allows immediately verified
+bottles. Signed Homebrew API metadata stays upstream and unchanged.
+
+The adapter serves only current stable official core bottles and their verified
+OCI metadata. Direct blobs, ranges and HEAD requests receive the same policy.
+Monthly-download thresholds and hook denial are unsupported and fail validation
+when enabled, including inherited policies. Source builds, casks, taps, HEAD
+installs, arbitrary downloads and bootstrap artifacts are excluded. Environment
+variables alone do not enforce all installations: fully cached bottles need no
+proxy request, and some excluded downloads go directly upstream. Use managed
+client configuration and egress for a stronger deployment guarantee. The
+[guide](docs/homebrew/README.md) covers platform qualification, warming, backup,
+diagnostics and opt-in smoke tests.
+
 ## Policies
 
 ```toml
@@ -195,6 +235,7 @@ Unspecified ecosystem values inherit the global policy. A day is exactly 86,400 
 | pip | Simple API upload time for each file | PyPI Stats `last_month`, package-wide |
 | Composer | Reported time plus durable local first observation | Packagist `monthly`, package-wide |
 | RubyGems | Compact info publication `created_at`, per version/platform | Unavailable; effective threshold must be zero |
+| Homebrew | Durable local observation of signed formula definition and verified per-platform bottle graph | Unavailable; effective threshold must be zero |
 
 Monthly windows follow each provider's semantics; they are not a single synchronized measurement. Counts are popularity signals, not unique users, evidence of safety, or downloads of the selected version. Missing statistics, malformed responses, rate limits, and upstream failures deny access when a threshold is enabled. The service does not substitute a fabricated zero or serve expired data on failure.
 
@@ -213,7 +254,7 @@ curl 'http://127.0.0.1:8080/stats?limit=50&offset=50'
 Each release includes `ecosystem`, `package`, `release`, `full_downloads`,
 `range_transfers`, `bytes`, `first_download`, and `last_download`. Totals also
 include distinct `packages` and `releases`; the same package name in two
-ecosystems counts separately. For RubyGems, `release` includes the platform suffix for non-`ruby` gems. For npm and Composer, `release` is the version;
+ecosystems counts separately. For RubyGems, `release` includes the platform suffix for non-`ruby` gems. For Homebrew, `release` includes the version, rebuild, platform and a hash binding the child manifest, content and formula definition. For npm and Composer, `release` is the version;
 for Python it is the exact wheel or source filename. Timestamps are Unix seconds
 in UTC, and first/last timestamps are null when no transfers have been recorded.
 The optional `ecosystem` and exact `package` filters apply to the entire report;
@@ -282,7 +323,7 @@ Execution semantics: [npm lifecycle scripts](https://docs.npmjs.com/cli/v11/usin
 
 ## Cache and performance
 
-- Hot JSON and RubyGems text metadata share a configurable approximate weight budget: 64 MiB by default, split 75% metadata / 25% statistics. Accounting estimates parsed JSON at four times its encoded size; this is not a hard process RSS limit.
+- Hot JSON and RubyGems text metadata share a configurable approximate weight budget: 64 MiB by default, split 75% metadata / 25% statistics. Enabling Homebrew changes that split to 50% parsed metadata, 25% raw OCI metadata, and 25% statistics. Accounting estimates parsed JSON at four times its encoded size; this is not a hard process RSS limit.
 - SQLite uses WAL, prepared ledger statements, indexed expiry/eviction, and a small page cache. Blocking database work runs outside the async workers. A 512 MiB default response budget includes payloads and estimated entry overhead; deleted pages are reused. The physical database, indexes, WAL, and Composer safety ledger can exceed this budget.
 - Concurrent misses for the same upstream URL share one fetch. Defaults: metadata freshness 5 minutes, statistics freshness 24 hours. Disk hits keep their original expiry. Policy is recalculated on every request, so releases age into eligibility without waiting for metadata refresh.
 - Successful index metadata responses persist across restarts. Errors are cached in memory for 30 seconds to reduce repeated failed requests. HTTP 404 remains 404; policy denial is 403; unverifiable/upstream failures are 502. An all-filtered pip/Composer/RubyGems listing is empty, allowing clients to report no matching version.

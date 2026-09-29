@@ -26,6 +26,18 @@ install_hooks = "report"
 min_monthly_downloads = 0
 install_hooks = "report"
 
+[homebrew]
+# Official stable core bottles only; disabled until explicitly opted in.
+enabled = false
+# Age is durable local first observation of verified bottle evidence.
+# min_age_days = 7
+min_monthly_downloads = 0
+install_hooks = "report"
+# Only enable platforms you intend to serve. Real-client smoke: 7.0.6 on arm64 Tahoe.
+platforms = ["arm64_tahoe"]
+# The signed formula catalogue exceeds the general 32 MiB metadata default.
+max_api_mb = 64
+
 [cache]
 path = "data/cache.sqlite3"
 memory_mb = 64

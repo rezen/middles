@@ -980,6 +980,7 @@ dependencies = [
  "http-body-util",
  "moka",
  "reqwest",
+ "ring",
  "rusqlite",
  "semver",
  "serde",

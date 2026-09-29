@@ -36,6 +36,8 @@ pub struct App {
     // their own pool; slow downloads must not starve metadata resolution.
     metadata_permits: Arc<Semaphore>,
     artifact_permits: Arc<Semaphore>,
+    pub(crate) oci: registry::oci::Transport,
+    pub(crate) homebrew_key: &'static [u8],
 }
 
 impl App {
@@ -55,7 +57,7 @@ impl App {
             .redirect(reqwest::redirect::Policy::none())
             .gzip(false)
             .build()?;
-        let store = Store::open(config.cache.clone()).await?;
+        let store = Store::open_with_raw(config.cache.clone(), config.homebrew.enabled).await?;
         Ok(Self {
             metadata_permits: Arc::new(Semaphore::new(config.upstream.concurrency)),
             artifact_permits: Arc::new(Semaphore::new(config.upstream.concurrency)),
@@ -63,6 +65,8 @@ impl App {
             store,
             client,
             artifact_client,
+            oci: registry::oci::Transport::default(),
+            homebrew_key: include_bytes!("registry/homebrew-1.der"),
         })
     }
     pub fn router(self) -> Router {
@@ -95,6 +99,7 @@ impl App {
             )
             .fallback(|| async { Error::missing("unsupported endpoint") })
             .layer(CompressionLayer::new())
+            .merge(registry::homebrew::routes())
             .layer(TraceLayer::new_for_http())
             .with_state(self)
     }
@@ -180,8 +185,8 @@ impl App {
                 "/downloads/monthly",
             ),
             // Configuration validation rejects a nonzero RubyGems threshold.
-            Ecosystem::Rubygems => {
-                return Err(Error::internal("no RubyGems download evidence provider"));
+            Ecosystem::Rubygems | Ecosystem::Homebrew => {
+                return Err(Error::internal("no monthly download evidence provider"));
             }
         };
         let stats = self.metadata(url, "application/json", true).await?;
@@ -283,54 +288,72 @@ impl App {
                     response.status()
                 )));
             }
-            let mut builder = Response::builder()
-                .status(response.status())
-                .header("cache-control", "no-store");
-            for name in [
-                "content-type",
-                "content-length",
-                "content-range",
-                "accept-ranges",
-                "content-encoding",
-            ] {
-                if let Some(value) = response.headers().get(name) {
-                    builder = builder.header(name, value);
-                }
-            }
-            // Hold the concurrency permit until the body finishes or the client disconnects.
-            let length = response.content_length();
-            let partial = response.status() == StatusCode::PARTIAL_CONTENT;
-            let identity = identity.filter(|_| response.status() == StatusCode::OK || partial);
-            let store = self.store.clone();
-            let stream = stream::unfold(
-                (response.bytes_stream(), permit, identity, store, 0u64),
-                move |(mut chunks, permit, mut identity, store, mut bytes)| async move {
-                    let chunk = chunks.next().await;
-                    match &chunk {
-                        Some(Ok(chunk)) => bytes = bytes.saturating_add(chunk.len() as u64),
-                        Some(Err(_)) => identity = None,
-                        None => {}
-                    }
-                    // HTTP servers may stop polling at Content-Length without polling EOF.
-                    // Persist before handing off the final chunk, or at EOF for chunked bodies.
-                    let complete = match length {
-                        Some(length) => bytes == length,
-                        None => chunk.is_none(),
-                    };
-                    if complete
-                        && let Some(identity) = identity.take()
-                        && let Err(error) = store.record_download(identity, bytes, partial).await
-                    {
-                        tracing::warn!(%error, "could not record download statistics");
-                    }
-                    chunk.map(|chunk| (chunk, (chunks, permit, identity, store, bytes)))
-                },
-            );
-            return builder
-                .body(Body::from_stream(stream.fuse()))
-                .map_err(|e| Error::internal(e.to_string()));
+            return self
+                .stream_response(response, permit, identity, false, None)
+                .await;
         }
         unreachable!()
+    }
+    pub(crate) async fn stream_response(
+        &self,
+        response: reqwest::Response,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        identity: Option<stats::Identity>,
+        head: bool,
+        expected_bytes: Option<u64>,
+    ) -> Result<Response> {
+        let mut builder = Response::builder()
+            .status(response.status())
+            .header("cache-control", "no-store");
+        for name in [
+            "content-type",
+            "content-length",
+            "content-range",
+            "accept-ranges",
+            "content-encoding",
+        ] {
+            if let Some(value) = response.headers().get(name) {
+                builder = builder.header(name, value);
+            }
+        }
+        // Hold the concurrency permit until the body finishes or the client disconnects.
+        let length = response.content_length();
+        let partial = response.status() == StatusCode::PARTIAL_CONTENT;
+        let identity = identity.filter(|_| response.status() == StatusCode::OK || partial);
+        let store = self.store.clone();
+        if head {
+            return builder
+                .body(Body::empty())
+                .map_err(|_| Error::internal("invalid upstream headers"));
+        }
+        let stream = stream::unfold(
+            (response.bytes_stream(), permit, identity, store, 0u64),
+            move |(mut chunks, permit, mut identity, store, mut bytes)| async move {
+                let chunk = chunks.next().await;
+                match &chunk {
+                    Some(Ok(chunk)) => bytes = bytes.saturating_add(chunk.len() as u64),
+                    Some(Err(_)) => identity = None,
+                    None => {}
+                }
+                // HTTP servers may stop polling at Content-Length without polling EOF.
+                // Persist before handing off the final chunk, or at EOF for chunked bodies.
+                let complete = match length {
+                    Some(length) => bytes == length,
+                    None => chunk.is_none(),
+                };
+                if complete
+                    && expected_bytes.is_none_or(|expected| bytes == expected)
+                    && let Some(identity) = identity.take()
+                    && let Err(error) = store.record_download(identity, bytes, partial).await
+                {
+                    tracing::warn!(%error, "could not record download statistics");
+                }
+                chunk.map(|chunk| (chunk, (chunks, permit, identity, store, bytes)))
+            },
+        );
+        builder
+            .body(Body::from_stream(stream.fuse()))
+            .map_err(|e| Error::internal(e.to_string()))
     }
 }
 
@@ -367,6 +390,7 @@ async fn artifact(
             registry::pip::artifact(&app, &package, &release, &filename, Utc::now()).await?
         }
         Ecosystem::Composer => registry::composer::artifact(&app, &package, &release).await?,
+        Ecosystem::Homebrew => return Err(Error::bad("bottles are served from /homebrew/v2")),
         Ecosystem::Rubygems => {
             return Err(Error::bad("gem archives are served from /rubygems/gems"));
         }

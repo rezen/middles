@@ -5,3 +5,5 @@
 *.sqlite3-shm
 *.sqlite3-wal
 /middles.local.toml
+__pycache__/
+.DS_Store

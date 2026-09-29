@@ -15,6 +15,7 @@ pub struct Config {
     pub pip: Override,
     pub composer: Override,
     pub rubygems: Override,
+    pub homebrew: Homebrew,
     pub upstream: Upstream,
 }
 
@@ -24,6 +25,31 @@ pub struct Override {
     pub min_age_days: Option<u32>,
     pub min_monthly_downloads: Option<u64>,
     pub install_hooks: Option<crate::inspection::HookPolicy>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Homebrew {
+    pub enabled: bool,
+    #[serde(flatten)]
+    pub policy: Override,
+    pub registry: String,
+    pub api: String,
+    pub platforms: Vec<String>,
+    pub max_api_mb: usize,
+}
+
+impl Default for Homebrew {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            policy: Override::default(),
+            registry: "https://ghcr.io".into(),
+            api: "https://formulae.brew.sh/api".into(),
+            platforms: vec!["arm64_tahoe".into()],
+            max_api_mb: 64,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -64,6 +90,7 @@ impl Default for Config {
             pip: Override::default(),
             composer: Override::default(),
             rubygems: Override::default(),
+            homebrew: Homebrew::default(),
             upstream: Upstream::default(),
         }
     }
@@ -115,6 +142,7 @@ impl Config {
             Ecosystem::Pip => &self.pip,
             Ecosystem::Composer => &self.composer,
             Ecosystem::Rubygems => &self.rubygems,
+            Ecosystem::Homebrew => &self.homebrew.policy,
         };
         Policy {
             install_hooks: o.install_hooks.unwrap_or(self.policy.install_hooks),
@@ -185,6 +213,61 @@ impl Config {
             bail!(
                 "RubyGems install-hook enforcement is unavailable; set [rubygems] install_hooks = \"report\""
             );
+        }
+        if self.homebrew.enabled {
+            let brew = self.policy_for(Ecosystem::Homebrew);
+            if brew.min_monthly_downloads != 0 {
+                bail!(
+                    "Homebrew monthly download evidence is unavailable; set [homebrew] min_monthly_downloads = 0"
+                );
+            }
+            if brew.install_hooks == crate::inspection::HookPolicy::Deny {
+                bail!(
+                    "Homebrew install-hook enforcement is unavailable; set [homebrew] install_hooks = \"report\""
+                );
+            }
+            for (value, official) in [
+                (&self.homebrew.registry, "https://ghcr.io"),
+                (&self.homebrew.api, "https://formulae.brew.sh/api"),
+            ] {
+                let u = url::Url::parse(value).context("invalid Homebrew upstream")?;
+                let fixture = u
+                    .host_str()
+                    .is_some_and(|h| h == "127.0.0.1" || h == "[::1]")
+                    && matches!(u.scheme(), "http" | "https");
+                if value.trim_end_matches('/') != official && !fixture
+                    || !u.username().is_empty()
+                    || u.password().is_some()
+                    || u.query().is_some()
+                    || u.fragment().is_some()
+                    || (fixture && !matches!(u.path(), "" | "/" | "/api"))
+                {
+                    bail!(
+                        "Homebrew upstreams must be official HTTPS endpoints or explicit loopback fixtures"
+                    );
+                }
+            }
+            if self.homebrew.max_api_mb == 0
+                || self.homebrew.max_api_mb > 128
+                || self.homebrew.platforms.is_empty()
+                || self.homebrew.platforms.len() > 8
+                || self
+                    .homebrew
+                    .platforms
+                    .iter()
+                    .any(|p| !crate::registry::homebrew::platform(p))
+                || self
+                    .homebrew
+                    .platforms
+                    .iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != self.homebrew.platforms.len()
+            {
+                bail!(
+                    "Homebrew requires 1-8 distinct supported platform tags and max_api_mb within 1-128"
+                );
+            }
         }
         Ok(())
     }

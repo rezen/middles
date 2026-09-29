@@ -55,6 +55,14 @@ smoke: build
 ruby-smoke: build
     python3 scripts/rubygems-smoke.py
 
+# Opt-in isolated Homebrew client -> middles -> official GHCR smoke; see docs/homebrew.
+homebrew-smoke *args: build
+    python3 scripts/homebrew-smoke.py "$@"
+
+# Observe an official formula dependency closure without downloading bottles.
+homebrew-warm *args:
+    python3 scripts/homebrew-warm.py "$@"
+
 # Build the container image.
 docker-build:
     docker compose build
