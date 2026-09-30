@@ -12,6 +12,10 @@ build:
 release:
     cargo build --release --locked
 
+# Increment the patch version, or set an explicit version.
+bump-version *args:
+    scripts/bump-version.sh "$@"
+
 # Check compilation without producing a binary.
 check:
     cargo check --all-targets --locked

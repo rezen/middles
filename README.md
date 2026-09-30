@@ -12,6 +12,28 @@ One binary, no external database or background registry crawl. Tokio + Axum serv
 
 Requires current stable Rust and a C toolchain to build bundled SQLite and the xz decoder.
 
+### Install with Homebrew
+
+This repository also contains a Homebrew formula. Tap this repository by its
+explicit URL (the one-argument `brew tap` shorthand expects a repository named
+`homebrew-middles`):
+
+```sh
+brew tap rezen/middles https://github.com/rezen/middles.git
+brew install rezen/middles/middles
+middles --version
+```
+
+The formula builds from source and installs the example configuration at
+`$(brew --prefix)/share/middles/middles.example.toml`. Copy it to a writable
+location before customizing it; the default configuration also works without a
+file. To update the formula for a new release, use a tag whose `Cargo.toml`
+version matches, replace the formula URL and SHA-256 with that tag's source
+archive, then run `brew style`, `brew audit`, `brew install --build-from-source`
+and `brew test`. CI runs those checks on macOS. The `v0.2.1` tag predates its
+Cargo version bump, so the initial formula uses the first commit that reports
+`0.2.1`; future formulas should use matching release tags.
+
 ```sh
 cargo build --release --locked
 cp middles.example.toml middles.toml
@@ -423,6 +445,11 @@ This is an explicit registry proxy, not an intercepting network firewall. Existi
 It binds to loopback by default and has no built-in user authentication. Put shared installations behind authenticated HTTPS ingress. Archive destinations and every redirect must match an exact host in `upstream.artifact_hosts`; arbitrary user-provided URLs are never accepted as fetch targets. Keep that allowlist limited to trusted public archive hosts. HTTPS is required upstream unless `allow_http = true` is explicitly set for local mocks. Custom registry base URLs are trusted operator configuration. No automatic discovery of arbitrary hosts or forwarding of upstream notification hooks is performed.
 
 ## Development
+
+Run `just bump-version` to increment the patch version in `Cargo.toml` and
+`Cargo.lock`, or `just bump-version 0.3.0` to set an explicit version. Review
+the changes before tagging a release. The Homebrew formula's source URL and
+checksum are updated separately after the release source archive exists.
 
 With `just` installed, run `just` to list recipes:
 

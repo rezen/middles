@@ -14,9 +14,22 @@ env:
   LZMA_API_STATIC: 1
 
 jobs:
+  validate-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches Cargo.toml version
+        if: github.ref_type == 'tag'
+        run: |
+          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [[ "${GITHUB_REF_NAME#v}" != "$cargo_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    needs: validate-tag
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -80,13 +93,6 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Check tag matches Cargo.toml version
-        run: |
-          cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
-          if [[ "${GITHUB_REF_NAME#v}" != "$cargo_version" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version" >&2
-            exit 1
-          fi
       - uses: actions/download-artifact@v4
         with:
           path: dist
