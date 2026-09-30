@@ -631,7 +631,8 @@ fn debian_range_matches(range: &Value, version: &str) -> Option<bool> {
                 return None;
             }
             introduced = Some(start.as_str()?);
-        } else if let Some(end) = obj.get("fixed").or_else(|| obj.get("last_affected")) {
+        } else {
+            let end = obj.get("fixed").or_else(|| obj.get("last_affected"))?;
             let start = introduced.take()?;
             let after_start =
                 start == "0" || crate::debian_version::compare(version, start)? != Ordering::Less;
@@ -642,8 +643,6 @@ fn debian_range_matches(range: &Value, version: &str) -> Option<bool> {
                 comparison != Ordering::Greater
             };
             matched |= after_start && before_end;
-        } else {
-            return None;
         }
     }
     if let Some(start) = introduced {
@@ -859,8 +858,10 @@ mod tests {
         assert_eq!(cvss_v2("AV:N/AC:L/Au:N/C:C/I:C/A:C"), Some(10.0));
         assert_eq!(cvss_v2("AV:N/AC:L/Au:N/C:N/I:N/A:N"), Some(0.0));
         assert_eq!(cvss_v2("AV:N/AC:M/Au:N/C:P/I:N/A:N"), Some(4.3));
-        let mut policy = Policy::default();
-        policy.advisories = AdvisoryPolicy::Deny;
+        let mut policy = Policy {
+            advisories: AdvisoryPolicy::Deny,
+            ..Default::default()
+        };
         let high = json!({"id":"GHSA-test", "severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]});
         assert_eq!(finding(&high, &policy).unwrap().severity, Some(9.8));
         assert!(finding(&high, &policy).unwrap().denies);
