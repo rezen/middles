@@ -48,16 +48,13 @@ fn default_limit() -> u32 {
 
 pub(crate) async fn handle(
     State(app): State<App>,
-    Query(mut query): Query<StatsQuery>,
+    Query(query): Query<StatsQuery>,
 ) -> Result<Response> {
     if query.limit == 0 || query.limit > 1000 {
         return Err(Error::bad("limit must be between 1 and 1000"));
     }
-    if let Some(ecosystem) = &query.ecosystem
-        && Ecosystem::parse(ecosystem)? == Ecosystem::Pip
-        && let Some(package) = &query.package
-    {
-        query.package = Some(crate::registry::pip::normalize(package)?);
+    if let Some(ecosystem) = &query.ecosystem {
+        Ecosystem::parse(ecosystem)?;
     }
     let report = app.store.download_stats(query).await?;
     Ok(json_response(report, "application/json"))
@@ -98,11 +95,18 @@ impl Store {
     }
 
     async fn download_stats(&self, query: StatsQuery) -> Result<Value> {
-        self.database(move |db| {
+        // pip rows are stored under the PEP 503 normalized name; match either
+        // spelling so a package filter finds them without an ecosystem selection.
+        let pip_package = query
+            .package
+            .as_deref()
+            .and_then(|name| crate::registry::pip::normalize(name).ok());
+        self.read_database(move |db| {
             // A transaction keeps totals and the paginated rows on the same snapshot.
             let tx = db.transaction()?;
-            let filter = "WHERE (?1 IS NULL OR ecosystem = ?1) AND (?2 IS NULL OR package = ?2)";
-            let args = params![query.ecosystem, query.package];
+            let filter = "WHERE (?1 IS NULL OR ecosystem = ?1)
+                 AND (?2 IS NULL OR package = ?2 OR (ecosystem = 'pip' AND package = ?3))";
+            let args = params![query.ecosystem, query.package, pip_package];
             let totals = tx.query_row(&format!(
                 "SELECT COALESCE(SUM(full_downloads), 0), COALESCE(SUM(range_transfers), 0),
                     COALESCE(SUM(bytes), 0), COUNT(*), MIN(first_download), MAX(last_download)
@@ -131,9 +135,9 @@ impl Store {
             let releases = {
                 let mut statement = tx.prepare(&format!(
                     "SELECT ecosystem, package, release, full_downloads, range_transfers, bytes, first_download, last_download
-                     FROM downloads {filter} ORDER BY last_download DESC, ecosystem, package, release LIMIT ?3 OFFSET ?4"
+                     FROM downloads {filter} ORDER BY last_download DESC, ecosystem, package, release LIMIT ?4 OFFSET ?5"
                 ))?;
-                statement.query_map(params![query.ecosystem, query.package, query.limit, query.offset], |r| Ok(json!({
+                statement.query_map(params![query.ecosystem, query.package, pip_package, query.limit, query.offset], |r| Ok(json!({
                     "ecosystem": r.get::<_, String>(0)?, "package": r.get::<_, String>(1)?,
                     "release": r.get::<_, String>(2)?, "full_downloads": r.get::<_, i64>(3)?,
                     "range_transfers": r.get::<_, i64>(4)?, "bytes": r.get::<_, i64>(5)?,
@@ -248,5 +252,37 @@ mod tests {
         assert_eq!(stats["totals"]["bytes"], 6);
         assert_eq!(stats["releases"][0]["release"], "chunked");
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn package_filter_matches_pip_normalized_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.cache.path = dir.path().join("stats.sqlite3");
+        let app = App::new(config).await.unwrap();
+        let identity = Identity::new(Ecosystem::Pip, "typing-extensions", "t.whl");
+        app.store.record_download(identity, 3, false).await.unwrap();
+        for (ecosystem, package, expected) in [
+            (None, "Typing_Extensions", 1),
+            (None, "typing-extensions", 1),
+            (Some("pip"), "Typing_Extensions", 1),
+            (Some("npm"), "Typing_Extensions", 0),
+            (None, "other", 0),
+        ] {
+            let stats = app
+                .store
+                .download_stats(StatsQuery {
+                    ecosystem: ecosystem.map(String::from),
+                    package: Some(package.into()),
+                    limit: 100,
+                    offset: 0,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                stats["totals"]["full_downloads"], expected,
+                "{ecosystem:?} {package}"
+            );
+        }
     }
 }

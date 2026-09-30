@@ -4,7 +4,7 @@ use crate::{
 };
 use chrono::Utc;
 use moka::future::Cache;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -44,6 +44,9 @@ struct RawEntry {
 #[derive(Clone)]
 pub struct Store {
     db: Arc<Mutex<Connection>>,
+    // WAL lets this read-only connection serve statistics queries without
+    // waiting on hot-path writes serialized through the main connection.
+    read_db: Arc<Mutex<Connection>>,
     metadata: Cache<String, Entry>,
     stats: Cache<String, Entry>,
     raw: Cache<String, RawEntry>,
@@ -90,6 +93,17 @@ impl Store {
             ")?;
             Ok(db)
         }).await??;
+        // Opened after the writer so the WAL files it reads already exist.
+        let read_path = config.path.clone();
+        let read_db = tokio::task::spawn_blocking(move || -> anyhow::Result<Connection> {
+            let db = Connection::open_with_flags(
+                read_path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            db.busy_timeout(Duration::from_secs(5))?;
+            Ok(db)
+        })
+        .await??;
         let hot = |capacity, ttl| {
             Cache::builder()
                 .max_capacity(capacity)
@@ -100,6 +114,7 @@ impl Store {
         let capacity = config.memory_mb * 1024 * 1024;
         Ok(Self {
             db: Arc::new(Mutex::new(db)),
+            read_db: Arc::new(Mutex::new(read_db)),
             metadata: hot(
                 if raw_enabled {
                     capacity / 2
@@ -127,6 +142,21 @@ impl Store {
         f: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
     ) -> Result<T> {
         let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut db = db
+                .lock()
+                .map_err(|_| Error::internal("cache lock poisoned"))?;
+            f(&mut db).map_err(|e| Error::internal(format!("cache: {e}")))
+        })
+        .await
+        .map_err(|e| Error::internal(e.to_string()))?
+    }
+
+    pub(crate) async fn read_database<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let db = self.read_db.clone();
         tokio::task::spawn_blocking(move || {
             let mut db = db
                 .lock()

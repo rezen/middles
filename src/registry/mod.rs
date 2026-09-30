@@ -20,6 +20,17 @@ pub enum Ecosystem {
 }
 
 impl Ecosystem {
+    /// Must list every variant; the exhaustive matches below break the build
+    /// when one is added, and this array is what tests iterate to keep
+    /// user-facing surfaces (like the dashboard filter) complete.
+    pub const ALL: [Self; 6] = [
+        Self::Npm,
+        Self::Pip,
+        Self::Composer,
+        Self::Rubygems,
+        Self::Homebrew,
+        Self::Apt,
+    ];
     pub fn parse(value: &str) -> Result<Self> {
         match value {
             "npm" => Ok(Self::Npm),

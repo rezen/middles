@@ -241,6 +241,9 @@ td.time { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 "use strict";
 const $ = id => document.getElementById(id);
 const state = { ecosystem: "", package: "", offset: 0, limit: 100 };
+const REFRESH_MS = 60000;
+const FETCH_TIMEOUT_MS = 15000;
+let total = null;
 const intFmt = new Intl.NumberFormat("en-US");
 const compactFmt = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
 
@@ -249,15 +252,15 @@ function bytesText(n) {
   let v = n;
   for (const unit of ["KB", "MB", "GB", "TB", "PB"]) {
     v /= 1024;
-    if (v < 1024 || unit === "PB") return (v >= 100 ? Math.round(v) : v.toFixed(1)) + " " + unit;
+    if (v < 1023.5 || unit === "PB") return (v >= 100 ? Math.round(v) : v.toFixed(1)) + " " + unit;
   }
 }
 const pad = n => String(n).padStart(2, "0");
 function timeText(sec) {
   if (sec == null) return "—";
   const d = new Date(sec * 1000);
-  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
-    " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate()) +
+    " " + pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()) + " UTC";
 }
 function agoText(sec) {
   if (sec == null) return "never";
@@ -338,6 +341,7 @@ function barChart(container, rows, value, colorClass, format) {
 }
 
 function render(data) {
+  hideTooltip();
   const t = data.totals;
   $("tiles").replaceChildren(
     tile("Full downloads", compactFmt.format(t.full_downloads)),
@@ -366,11 +370,13 @@ function render(data) {
     el("td", { class: "time", text: timeText(row.last_download) })));
   $("release-rows").replaceChildren(...(releases.length ? releases :
     [el("tr", {}, el("td", { class: "empty", colspan: "8", text: "No transfers recorded yet." }))]));
-  $("prev").disabled = state.offset === 0;
-  $("next").disabled = state.offset + data.releases.length >= t.releases;
+  total = t.releases;
+  state.offset = data.offset;
+  $("prev").disabled = data.offset === 0;
+  $("next").disabled = data.offset + data.releases.length >= t.releases;
   $("range").textContent = t.releases === 0 ? "" :
-    "showing " + intFmt.format(state.offset + 1) + "–" +
-    intFmt.format(state.offset + data.releases.length) + " of " + intFmt.format(t.releases);
+    "showing " + intFmt.format(data.offset + 1) + "–" +
+    intFmt.format(data.offset + data.releases.length) + " of " + intFmt.format(t.releases);
   $("limitations").textContent = data.limitations || "";
 }
 
@@ -382,29 +388,39 @@ function query() {
   p.set("offset", state.offset);
   return p;
 }
-let inflight = false;
+let inflight = null;
 async function load() {
-  if (inflight) return;
-  inflight = true;
+  if (inflight) inflight.abort();
+  const controller = new AbortController();
+  inflight = controller;
   const app = $("app");
   app.classList.add("loading");
   try {
     const url = "stats?" + query();
     $("raw").href = url;
-    const response = await fetch(url, { headers: { accept: "application/json" } });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "status " + response.status);
-    render(data);
+    const response = await fetch(url, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      throw new Error((data && data.error) || "status " + response.status);
+    }
+    render(await response.json());
     $("error").classList.remove("show");
     const now = new Date();
     $("status").textContent = "updated " + pad(now.getHours()) + ":" + pad(now.getMinutes()) +
-      ":" + pad(now.getSeconds()) + " · refreshes every 60s";
+      ":" + pad(now.getSeconds()) + " · refreshes every " + REFRESH_MS / 1000 + "s";
   } catch (error) {
-    $("error").textContent = "Could not load statistics: " + error.message;
+    if (controller.signal.aborted) return;
+    $("error").textContent = "Could not load statistics: " +
+      (error.name === "TimeoutError" ? "request timed out" : error.message);
     $("error").classList.add("show");
   } finally {
-    app.classList.remove("loading");
-    inflight = false;
+    if (inflight === controller) {
+      inflight = null;
+      app.classList.remove("loading");
+    }
   }
 }
 
@@ -418,7 +434,12 @@ $("package").addEventListener("change", () => {
   state.offset = 0;
   load();
 });
-$("package").addEventListener("keydown", e => { if (e.key === "Enter") e.target.blur(); });
+$("package").addEventListener("keydown", e => {
+  if (e.key !== "Enter") return;
+  state.package = $("package").value.trim();
+  state.offset = 0;
+  load();
+});
 $("reset").addEventListener("click", () => {
   state.ecosystem = state.package = "";
   state.offset = 0;
@@ -432,10 +453,15 @@ $("prev").addEventListener("click", () => {
   load();
 });
 $("next").addEventListener("click", () => {
-  state.offset += state.limit;
+  const next = state.offset + state.limit;
+  if (total != null && next >= total) return;
+  state.offset = next;
   load();
 });
-setInterval(() => { if (!document.hidden) load(); }, 60000);
+setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
+// Browsers may restore control values across a reload without firing change events.
+state.ecosystem = $("ecosystem").value;
+state.package = $("package").value.trim();
 load();
 </script>
 </body>

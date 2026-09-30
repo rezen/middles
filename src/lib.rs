@@ -11,7 +11,7 @@ use axum::{
     body::Body,
     extract::{Path, State},
     http::{HeaderMap, Method, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
     routing::get,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -85,11 +85,23 @@ impl App {
                 "/ui",
                 get(|| async {
                     (
-                        [("cache-control", "no-store")],
+                        [
+                            ("cache-control", "no-store"),
+                            // The dashboard must stay self-contained on an origin that
+                            // also streams upstream bytes with their advertised type.
+                            (
+                                "content-security-policy",
+                                "default-src 'none'; script-src 'unsafe-inline'; \
+                                 style-src 'unsafe-inline'; connect-src 'self'; \
+                                 frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+                            ),
+                            ("x-content-type-options", "nosniff"),
+                        ],
                         Html(include_str!("ui.html")),
                     )
                 }),
             )
+            .route("/ui/", get(|| async { Redirect::permanent("/ui") }))
             .route(
                 "/rubygems/api/v1/dependencies",
                 get(registry::rubygems::dependencies),
@@ -330,7 +342,8 @@ impl App {
     ) -> Result<Response> {
         let mut builder = Response::builder()
             .status(response.status())
-            .header("cache-control", "no-store");
+            .header("cache-control", "no-store")
+            .header("x-content-type-options", "nosniff");
         for name in [
             "content-type",
             "content-length",

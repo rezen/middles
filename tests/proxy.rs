@@ -728,10 +728,35 @@ async fn ui_serves_embedded_dashboard_html() {
             .starts_with("text/html")
     );
     assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("default-src 'none'"));
+    assert!(csp.contains("connect-src 'self'"));
+    assert!(csp.contains("frame-ancestors 'none'"));
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let page = std::str::from_utf8(&body).unwrap();
-    // The dashboard is self-contained: it may only fetch the same-origin stats endpoint.
     assert!(page.contains("<title>middles</title>"));
     assert!(page.contains("\"stats?\""));
-    assert!(!page.contains("https://"));
+    // The dashboard is self-contained: every src/href/url() reference must be
+    // relative, so it can only fetch the same-origin stats endpoint.
+    for attribute in ["src=\"", "href=\"", "url("] {
+        for (index, _) in page.match_indices(attribute) {
+            let value = page[index + attribute.len()..].trim_start_matches(['"', '\'']);
+            let head = value.split(['/', '?', '#', '"', '\'', ')']).next().unwrap();
+            assert!(
+                !value.starts_with("//") && !head.contains(':'),
+                "external reference in dashboard: {}",
+                &value[..value.len().min(60)]
+            );
+        }
+    }
+    // The ecosystem filter must offer every supported ecosystem.
+    for ecosystem in middles::registry::Ecosystem::ALL {
+        assert!(
+            page.contains(&format!("<option value=\"{ecosystem}\">")),
+            "ecosystem filter dropdown is missing {ecosystem}"
+        );
+    }
 }
