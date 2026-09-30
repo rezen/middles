@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use middles::{
     App,
     config::Config,
+    osv_sync,
     setup::{self, Client},
 };
 use std::path::PathBuf;
@@ -23,6 +24,21 @@ struct Args {
 enum Command {
     /// Point local package managers (npm, pip, uv, Composer, Bundler, Homebrew, APT) at this proxy
     Configure(Configure),
+    /// Import OSV dump archives into the local advisory mirror
+    OsvSync(OsvSync),
+}
+
+#[derive(clap::Args)]
+struct OsvSync {
+    /// SQLite mirror path (default: cache.path from configuration)
+    #[arg(long)]
+    database: Option<PathBuf>,
+    /// Ecosystems to import [npm, PyPI, Packagist, RubyGems, Debian, Ubuntu]
+    #[arg(long, num_args = 1.., value_delimiter = ',')]
+    ecosystems: Vec<String>,
+    /// Read <ecosystem>.zip files from a directory instead of downloading them
+    #[arg(long)]
+    source_dir: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -58,8 +74,29 @@ async fn main() -> anyhow::Result<()> {
         None => Config::default(),
     };
     config.validate()?;
-    if let Some(Command::Configure(options)) = args.command {
-        return configure(&config, options);
+    match args.command {
+        Some(Command::Configure(options)) => return configure(&config, options),
+        Some(Command::OsvSync(options)) => {
+            let ecosystems = if options.ecosystems.is_empty() {
+                osv_sync::DEFAULT_ECOSYSTEMS
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect()
+            } else {
+                options.ecosystems
+            };
+            let database = options.database.as_deref().unwrap_or(&config.cache.path);
+            for imported in
+                osv_sync::sync(database, &ecosystems, options.source_dir.as_deref()).await?
+            {
+                println!(
+                    "{}: imported {} package advisories",
+                    imported.ecosystem, imported.records
+                );
+            }
+            return Ok(());
+        }
+        None => {}
     }
     if args.check {
         println!("Configuration valid");

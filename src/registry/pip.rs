@@ -81,6 +81,34 @@ pub async fn handle(
     let raw = raw(&app, &package).await?;
     app.check_downloads(Ecosystem::Pip, &package).await?;
     let mut doc = filter(&raw, &app.config.policy_for(Ecosystem::Pip), Utc::now())?;
+    if app.config.policy_for(Ecosystem::Pip).advisories == crate::policy::AdvisoryPolicy::Deny {
+        let versions = doc["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| {
+                let filename = file["filename"]
+                    .as_str()
+                    .ok_or_else(|| Error::upstream("Python file missing filename"))?;
+                crate::advisories::pip_version(&package, filename)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut versions = versions
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        versions.sort();
+        let blocked = app
+            .blocked_advisory_versions(Ecosystem::Pip, &package, &versions)
+            .await?;
+        doc["files"].as_array_mut().unwrap().retain(|file| {
+            file["filename"]
+                .as_str()
+                .and_then(|name| crate::advisories::pip_version(&package, name).ok())
+                .is_some_and(|v| !blocked.contains(&v))
+        });
+    }
     for file in doc["files"].as_array_mut().unwrap() {
         let name = file["filename"]
             .as_str()
@@ -145,6 +173,11 @@ pub async fn artifact(
         .allows_time(file["upload-time"].as_str(), now)
     {
         return Err(Error::denied("Python file is not eligible"));
+    }
+    if app.config.policy_for(Ecosystem::Pip).advisories != crate::policy::AdvisoryPolicy::Off {
+        let version = crate::advisories::pip_version(&package, filename)?;
+        app.check_advisories(Ecosystem::Pip, &package, &version)
+            .await?;
     }
     let raw_url = file["url"]
         .as_str()

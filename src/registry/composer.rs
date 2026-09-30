@@ -58,7 +58,7 @@ pub fn expand(raw: &Value, package: &str) -> Result<Vec<Value>> {
     Ok(result)
 }
 
-async fn eligible(app: &App, package: &str, dev: bool) -> Result<Vec<Value>> {
+async fn eligible(app: &App, package: &str, dev: bool, resolution: bool) -> Result<Vec<Value>> {
     composer_name(package)?;
     let base = app.config.upstream.packagist.trim_end_matches('/');
     let suffix = if dev { "~dev" } else { "" };
@@ -91,7 +91,7 @@ async fn eligible(app: &App, package: &str, dev: bool) -> Result<Vec<Value>> {
     let seen = app.store.observe(keys).await?;
     let now = Utc::now();
     let policy = app.config.policy_for(Ecosystem::Composer);
-    Ok(versions
+    let mut eligible: Vec<Value> = versions
         .into_iter()
         .zip(seen)
         .filter_map(|(mut v, seen)| {
@@ -117,7 +117,18 @@ async fn eligible(app: &App, package: &str, dev: bool) -> Result<Vec<Value>> {
             v.as_object_mut()?.remove("source");
             Some(v)
         })
-        .collect())
+        .collect();
+    if resolution {
+        let versions = eligible
+            .iter()
+            .filter_map(|v| v["version"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        let blocked = app
+            .blocked_advisory_versions(Ecosystem::Composer, package, &versions)
+            .await?;
+        eligible.retain(|v| v["version"].as_str().is_some_and(|s| !blocked.contains(s)));
+    }
+    Ok(eligible)
 }
 
 pub async fn handle(State(app): State<App>, Path(path): Path<String>) -> Result<Response> {
@@ -128,7 +139,7 @@ pub async fn handle(State(app): State<App>, Path(path): Path<String>) -> Result<
         .strip_suffix("~dev")
         .map(|p| (p, true))
         .unwrap_or((package, false));
-    let mut versions = eligible(&app, package, dev).await?;
+    let mut versions = eligible(&app, package, dev, true).await?;
     for info in &mut versions {
         let version = info["version"]
             .as_str()
@@ -149,14 +160,19 @@ pub async fn handle(State(app): State<App>, Path(path): Path<String>) -> Result<
 }
 
 pub async fn artifact(app: &App, package: &str, version: &str) -> Result<String> {
-    eligible(app, package, false)
+    let url = eligible(app, package, false, false)
         .await?
         .iter()
         .find(|v| v["version"].as_str() == Some(version))
         .and_then(|v| v.pointer("/dist/url"))
         .and_then(Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(|| Error::denied("Composer release is not eligible (including first-seen age)"))
+        .ok_or_else(|| {
+            Error::denied("Composer release is not eligible (including first-seen age)")
+        })?;
+    app.check_advisories(Ecosystem::Composer, package, version)
+        .await?;
+    Ok(url)
 }
 
 #[cfg(test)]

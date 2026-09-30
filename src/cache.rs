@@ -90,6 +90,14 @@ impl Store {
                 CREATE TABLE IF NOT EXISTS homebrew_evidence (
                     identity TEXT PRIMARY KEY, evidence TEXT NOT NULL, verified INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS advisories (
+                    ecosystem TEXT NOT NULL, package TEXT NOT NULL, id TEXT NOT NULL,
+                    body BLOB NOT NULL, PRIMARY KEY (ecosystem, package, id)
+                );
+                CREATE TABLE IF NOT EXISTS advisory_imports (
+                    ecosystem TEXT PRIMARY KEY, imported_at INTEGER NOT NULL,
+                    records INTEGER NOT NULL, source TEXT NOT NULL
+                );
             ")?;
             Ok(db)
         }).await??;

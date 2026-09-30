@@ -1,6 +1,10 @@
 listen = "127.0.0.1:6280"
 # The client-visible base URL. Set this to your HTTPS URL behind a reverse proxy.
 public_url = "http://127.0.0.1:6280"
+# online (default) or local. Populate the local mirror with `middles osv-sync`.
+advisory_source = "online"
+# A local mirror older than this many seconds denies enabled advisory checks.
+advisory_max_staleness_secs = 604800
 
 [policy]
 min_age_days = 7
@@ -9,11 +13,17 @@ min_monthly_downloads = 0
 # Inspect cached registry metadata; "deny" also rejects known dependency hooks,
 # Composer plugins/installers, and Python source builds. See README limitations.
 install_hooks = "report"
+# Published OSV advisories: off (default), report, or deny.
+# Deny can begin blocking unchanged builds when new advisories are published.
+advisories = "off"
+advisory_deny_cvss = 7.0
+advisory_waivers = []
 
 # Each ecosystem inherits unspecified values from [policy].
 [npm]
 # min_monthly_downloads = 1000
 # install_hooks = "deny"
+# advisories = "deny"
 [pip]
 # min_age_days = 14
 [composer]
@@ -36,6 +46,7 @@ min_age_days = 0
 # age_basis = "oci_created"
 min_monthly_downloads = 0
 install_hooks = "report"
+advisories = "off"
 # Only enable platforms you intend to serve. Real-client smoke: 7.0.6 on arm64 Tahoe.
 platforms = ["arm64_tahoe"]
 # The signed formula catalogue exceeds the general 32 MiB metadata default.
@@ -47,6 +58,7 @@ max_index_mb = 96
 # APT has no monthly download evidence and cannot inspect maintainer scripts.
 min_monthly_downloads = 0
 install_hooks = "report"
+advisories = "off"
 # To enable, add deb.debian.org to upstream.artifact_hosts and configure a repo:
 # [[apt.repos]]
 # name = "debian"
@@ -54,6 +66,7 @@ install_hooks = "report"
 # suites = ["bookworm", "bookworm-updates"]
 # components = ["main"]
 # architectures = ["amd64"]
+# osv_ecosystem = "Debian:12" # Ubuntu LTS example: Ubuntu:24.04:LTS
 
 [cache]
 path = "data/cache.sqlite3"
@@ -62,9 +75,11 @@ memory_mb = 64
 disk_mb = 512
 metadata_ttl_secs = 300
 stats_ttl_secs = 86400
+# OSV evidence uses the statistics TTL.
 
 [upstream]
 # rubygems = "https://rubygems.org"
+# osv = "https://api.osv.dev"
 timeout_secs = 60
 # Permits per upstream pool; metadata fetches and archive streams have separate pools.
 concurrency = 32

@@ -1,7 +1,10 @@
+pub mod advisories;
 pub mod cache;
 pub mod config;
+mod debian_version;
 pub mod error;
 pub mod inspection;
+pub mod osv_sync;
 pub mod policy;
 pub mod registry;
 pub mod setup;
@@ -116,6 +119,11 @@ impl App {
                 get(registry::rubygems::gemspec),
             )
             .route("/inspect/{ecosystem}/{*package}", get(inspection::handle))
+            .route("/inspect/advisories/status", get(advisories::status))
+            .route(
+                "/inspect/advisories/{ecosystem}/{*package}",
+                get(advisories::inspect),
+            )
             .route("/pip/simple/{name}/", get(registry::pip::handle))
             .route("/composer/packages.json", get(registry::composer::index))
             .route("/composer/p2/{*path}", get(registry::composer::handle))

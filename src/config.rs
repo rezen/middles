@@ -11,6 +11,8 @@ pub struct Config {
     pub public_url: String,
     pub cache: CacheConfig,
     pub policy: Policy,
+    pub advisory_source: AdvisorySource,
+    pub advisory_max_staleness_secs: u64,
     pub npm: Override,
     pub pip: Override,
     pub composer: Override,
@@ -20,12 +22,23 @@ pub struct Config {
     pub upstream: Upstream,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisorySource {
+    #[default]
+    Online,
+    Local,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Override {
     pub min_age_days: Option<u32>,
     pub min_monthly_downloads: Option<u64>,
     pub install_hooks: Option<crate::inspection::HookPolicy>,
+    pub advisories: Option<crate::policy::AdvisoryPolicy>,
+    pub advisory_deny_cvss: Option<f64>,
+    pub advisory_waivers: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -60,6 +73,7 @@ pub struct AptRepo {
     pub components: Vec<String>,
     pub architectures: Vec<String>,
     pub min_age_days: Option<u32>,
+    pub osv_ecosystem: Option<String>,
 }
 
 impl Default for Apt {
@@ -115,6 +129,7 @@ pub struct Upstream {
     pub npm_stats: String,
     pub pypi_stats: String,
     pub composer_stats: String,
+    pub osv: String,
     pub artifact_hosts: Vec<String>,
     pub allow_http: bool,
     pub timeout_secs: u64,
@@ -129,6 +144,8 @@ impl Default for Config {
             public_url: "http://127.0.0.1:6280".into(),
             cache: CacheConfig::default(),
             policy: Policy::default(),
+            advisory_source: AdvisorySource::Online,
+            advisory_max_staleness_secs: 604_800,
             npm: Override::default(),
             pip: Override::default(),
             composer: Override::default(),
@@ -160,6 +177,7 @@ impl Default for Upstream {
             npm_stats: "https://api.npmjs.org".into(),
             pypi_stats: "https://pypistats.org".into(),
             composer_stats: "https://packagist.org".into(),
+            osv: "https://api.osv.dev".into(),
             artifact_hosts: [
                 "registry.npmjs.org",
                 "files.pythonhosted.org",
@@ -195,6 +213,14 @@ impl Config {
             min_monthly_downloads: o
                 .min_monthly_downloads
                 .unwrap_or(self.policy.min_monthly_downloads),
+            advisories: o.advisories.unwrap_or(self.policy.advisories),
+            advisory_deny_cvss: o
+                .advisory_deny_cvss
+                .unwrap_or(self.policy.advisory_deny_cvss),
+            advisory_waivers: o
+                .advisory_waivers
+                .clone()
+                .unwrap_or_else(|| self.policy.advisory_waivers.clone()),
         }
     }
     pub fn validate(&self) -> anyhow::Result<()> {
@@ -223,6 +249,8 @@ impl Config {
             || self.upstream.max_metadata_mb == 0
             || self.upstream.max_metadata_mb > 1024
             || self.upstream.timeout_secs == 0
+            || self.advisory_max_staleness_secs == 0
+            || self.advisory_max_staleness_secs > 31_536_000
         {
             bail!("cache and upstream limits must be positive and within supported bounds");
         }
@@ -234,6 +262,7 @@ impl Config {
             &self.upstream.npm_stats,
             &self.upstream.pypi_stats,
             &self.upstream.composer_stats,
+            &self.upstream.osv,
         ] {
             let u = url::Url::parse(base).context("invalid upstream URL")?;
             if u.host_str().is_none()
@@ -249,6 +278,28 @@ impl Config {
             }
         }
         let ruby = self.policy_for(Ecosystem::Rubygems);
+        for ecosystem in Ecosystem::ALL {
+            let policy = self.policy_for(ecosystem);
+            if !policy.advisory_deny_cvss.is_finite()
+                || !(0.0..=10.0).contains(&policy.advisory_deny_cvss)
+            {
+                bail!("advisory_deny_cvss must be between 0.0 and 10.0");
+            }
+            if policy.advisory_waivers.iter().any(|id| {
+                id.is_empty()
+                    || id.len() > 128
+                    || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            }) {
+                bail!("advisory_waivers must contain valid advisory IDs");
+            }
+            if ecosystem == Ecosystem::Homebrew
+                && policy.advisories == crate::policy::AdvisoryPolicy::Deny
+            {
+                bail!(
+                    "advisory denial is unavailable for Homebrew; explicitly set advisories = \"off\" or \"report\""
+                );
+            }
+        }
         if ruby.min_monthly_downloads != 0 {
             bail!(
                 "RubyGems monthly download evidence is unavailable; set [rubygems] min_monthly_downloads = 0"
@@ -335,6 +386,32 @@ impl Config {
             }
             let mut names = std::collections::HashSet::new();
             for repo in &self.apt.repos {
+                if policy.advisories != crate::policy::AdvisoryPolicy::Off {
+                    let osv = repo.osv_ecosystem.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "APT advisory policy requires osv_ecosystem for each repository"
+                        )
+                    })?;
+                    let valid = osv.strip_prefix("Debian:").is_some_and(|v| {
+                        !v.is_empty() && v.len() <= 16 && v.bytes().all(|b| b.is_ascii_digit())
+                    }) || osv.strip_prefix("Ubuntu:").is_some_and(|v| {
+                        let v = v.strip_prefix("Pro:").unwrap_or(v);
+                        let v = v.strip_suffix(":LTS").unwrap_or(v);
+                        v.split_once('.').is_some_and(|(year, month)| {
+                            year.len() == 2
+                                && month.len() == 2
+                                && year
+                                    .bytes()
+                                    .chain(month.bytes())
+                                    .all(|b| b.is_ascii_digit())
+                        })
+                    });
+                    if !valid {
+                        bail!(
+                            "APT osv_ecosystem must be an explicit Debian or Ubuntu release, e.g. Debian:12 or Ubuntu:24.04:LTS"
+                        );
+                    }
+                }
                 if !crate::registry::component(&repo.name) || !names.insert(&repo.name) {
                     bail!("APT repository names must be unique route-safe components");
                 }

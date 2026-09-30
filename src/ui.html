@@ -18,6 +18,10 @@
   --series-1: #2a78d6;
   --series-2: #eb6834;
   --critical: #d03b3b;
+  --nav-bg: #2e2e2e;
+  --nav-ink: #f4f4f2;
+  --nav-ink-2: #b9b8b2;
+  --nav-border: rgba(255, 255, 255, 0.08);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -40,13 +44,27 @@ body {
   background: var(--page);
   color: var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-  padding: 24px 20px 48px;
 }
-.wrap { max-width: 1080px; margin: 0 auto; }
-header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-header h1 { font-size: 20px; font-weight: 650; }
-header .sub { color: var(--ink-2); }
-header a { color: var(--ink-2); margin-left: auto; font-size: 13px; }
+.topbar {
+  background: var(--nav-bg);
+  color: var(--nav-ink);
+  border-bottom: 1px solid var(--nav-border);
+}
+.topbar-inner {
+  max-width: 1080px; margin: 0 auto;
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 12px 20px;
+}
+.topbar h1 { font-size: 18px; font-weight: 650; color: var(--nav-ink); }
+.topbar .sub { color: var(--nav-ink-2); font-size: 13px; }
+.topbar .links { margin-left: auto; display: flex; align-items: baseline; gap: 16px; }
+.topbar .links a {
+  color: var(--nav-ink-2); font-size: 13px; text-decoration: none;
+  padding: 4px 0; border-bottom: 1px solid transparent;
+}
+.topbar .links a:hover { color: var(--nav-ink); border-bottom-color: var(--nav-ink-2); }
+.topbar .links a:focus-visible { outline: 2px solid var(--nav-ink); outline-offset: 3px; border-radius: 2px; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 48px; }
 .filters {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-bottom: 16px;
@@ -165,12 +183,16 @@ td.time { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
+<nav class="topbar" aria-label="Primary">
+  <div class="topbar-inner">
     <h1>middles</h1>
     <span class="sub">artifact transfer statistics</span>
-    <a id="raw" href="stats">raw JSON</a>
-  </header>
+    <div class="links">
+      <a id="raw" href="stats">raw JSON</a>
+    </div>
+  </div>
+</nav>
+<div class="wrap">
   <div class="filters">
     <label>Ecosystem
       <select id="ecosystem">

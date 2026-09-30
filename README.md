@@ -142,7 +142,7 @@ registry=http://127.0.0.1:6280/npm/
 audit=false
 ```
 
-Scoped packages, exact versions, distribution tags, and conventional npm tarball paths are supported. If `latest` is too young, it resolves to the highest eligible stable version no newer than upstream `latest`. Other blocked tags are removed. Publishing, login, search, npm audit, and private registry authentication are outside this initial scope. Disabling npm audit does not provide a replacement vulnerability scanner.
+Scoped packages, exact versions, distribution tags, and conventional npm tarball paths are supported. If `latest` is too young, it resolves to the highest eligible stable version no newer than upstream `latest`. Other blocked tags are removed. Publishing, login, search, npm audit, and private registry authentication are outside this initial scope. Published advisory lookup is available as described below; it does not replace archive scanning or npm audit's other behavior.
 
 ### pip
 
@@ -207,6 +207,9 @@ RubyGems has no configured monthly-download evidence provider or install-hook in
 ```toml
 [rubygems]
 min_monthly_downloads = 0
+advisories = "off"
+advisory_deny_cvss = 7.0
+advisory_waivers = []
 install_hooks = "report"
 ```
 
@@ -284,6 +287,35 @@ Unspecified ecosystem values inherit the global policy. A day is exactly 86,400 
 | Homebrew | Durable local observation of signed formula definition and verified per-platform bottle graph | Unavailable; effective threshold must be zero |
 
 Monthly windows follow each provider's semantics; they are not a single synchronized measurement. Counts are popularity signals, not unique users, evidence of safety, or downloads of the selected version. Missing statistics, malformed responses, rate limits, and upstream failures deny access when a threshold is enabled. The service does not substitute a fabricated zero or serve expired data on failure.
+
+### Published advisories
+
+`advisories = "report"` queries [OSV](https://osv.dev) for an exact package version and exposes findings at `GET /inspect/advisories/{ecosystem}/{package}?version=...`. `advisories = "deny"` hides affected releases during npm, pip, Composer and RubyGems resolution and blocks artifact access for those ecosystems. `off` is the default and makes no install-path advisory requests. Global values can be overridden per ecosystem. Homebrew cannot use `deny`; explicitly override a global denial for it.
+
+```toml
+[npm]
+advisories = "deny"
+advisory_deny_cvss = 7.0
+advisory_waivers = ["GHSA-xxxx-xxxx-xxxx"]
+```
+
+The threshold is inclusive. middles computes the highest CVSS v2, v3, or v4 base score reported by OSV; qualitative `low`, `moderate`, `high`, and `critical` ratings use their band's upper bound. Unscored or unparseable advisories fail closed in `deny` mode. Published malicious-package records deny regardless of threshold. Withdrawn records are ignored. Waivers match an advisory ID or alias, including CVE IDs. Review waivers carefully: they apply across packages.
+
+**Operational effect:** newly published advisories can make previously installable versions fail without any package or configuration change. OSV responses are cached for `cache.stats_ttl_secs` (24 hours by default), so new, fixed, or withdrawn records can take that long to affect requests. Provider failures, rate limits, and malformed responses return an upstream error when checking is enabled. Cached evidence is re-evaluated after a policy change and survives restart.
+
+Resolution filtering uses batches of exact-version OSV queries, then fetches full records for unique advisory IDs. This avoids local interpretation of registry version ranges; [measurements and query choice](docs/benchmarks/osv-resolution.md) cover large packages. An OSV error while filtering denies the listing rather than exposing unchecked versions. Composer metapackages have no archive request, but are hidden from resolution metadata when affected. RubyGems platform builds are checked by package name and version because OSV does not distinguish their platform variants. Advisory inspection evaluates only this policy and confers no artifact access. It uses published metadata and does not scan archives, detect unpublished vulnerabilities, or classify malware beyond published records. A clean report is absence of published evidence, not a safety guarantee. Client caches, direct sources, and existing lockfile URLs outside this proxy bypass the check.
+
+For an opt-in check against live OSV data, build the binary and run `python3 scripts/osv-smoke.py`. It starts an isolated `report` instance and inspects historical versions in all four language ecosystems without downloading artifacts.
+
+#### Offline advisory mirror
+
+Set `advisory_source = "local"` at the top level and run `middles --config middles.toml osv-sync` from an operator job. The command uses `cache.path` from that configuration and downloads OSV's per-ecosystem ZIP exports for npm, PyPI, Packagist and RubyGems by default. Add `--ecosystems npm PyPI Packagist RubyGems Debian Ubuntu` when APT uses a Debian or Ubuntu release. You can override the path with `--database`. The command stages and validates records in a separate SQLite file, then replaces the selected ecosystems in one transaction. It does not crawl package registries or run in the server background. Schedule it within `advisory_max_staleness_secs` (default seven days).
+
+`GET /inspect/advisories/status` exposes each import time, source, record count and staleness. A missing or stale import returns 502 for an enabled advisory check. The mirror uses OSV's enumerated `affected.versions` and evaluates Debian/Ubuntu `ECOSYSTEM` ranges with Debian package version ordering. If a language-ecosystem record has no enumerated versions, or a Debian/Ubuntu range cannot be evaluated, the mirror conservatively treats the advisory as possibly applying. Inspection marks these findings with `match_uncertain: true`. This can block a fixed version until the record supplies usable version evidence or an operator waives it. Use the online source where that tradeoff is unacceptable.
+
+#### APT advisories
+
+APT advisory checking is available only at `.deb` authorization; signed indexes remain byte-for-byte unchanged. Each enabled `[[apt.repos]]` needs an explicit `osv_ecosystem`, such as `Debian:12` or `Ubuntu:24.04:LTS`. middles reads the source package and source version from the signed Packages entry (falling back to the binary name and version when `Source` is absent). Every configured repository that lists the archive is checked; a conflicting source identity denies access. `GET /apt/{repo}/check/{archive-path}` includes advisory reports alongside the age diagnostic. Homebrew advisory denial remains unsupported.
 
 ## Local download statistics
 

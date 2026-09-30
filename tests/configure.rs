@@ -54,6 +54,7 @@ fn apt_config() -> Config {
             components: vec!["main".into()],
             architectures: vec!["amd64".into()],
             min_age_days: None,
+            osv_ecosystem: None,
         },
         AptRepo {
             name: "debian-security".into(),
@@ -62,6 +63,7 @@ fn apt_config() -> Config {
             components: vec!["main".into(), "contrib".into()],
             architectures: vec!["amd64".into(), "i386".into()],
             min_age_days: Some(0),
+            osv_ecosystem: None,
         },
     ];
     config

@@ -2,6 +2,15 @@ use crate::inspection::HookPolicy;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisoryPolicy {
+    #[default]
+    Off,
+    Report,
+    Deny,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Policy {
@@ -9,6 +18,9 @@ pub struct Policy {
     /// Package-wide downloads in the provider's monthly window, not per-version downloads.
     pub min_monthly_downloads: u64,
     pub install_hooks: HookPolicy,
+    pub advisories: AdvisoryPolicy,
+    pub advisory_deny_cvss: f64,
+    pub advisory_waivers: Vec<String>,
 }
 
 impl Default for Policy {
@@ -17,6 +29,9 @@ impl Default for Policy {
             min_age_days: 7,
             min_monthly_downloads: 0,
             install_hooks: HookPolicy::Report,
+            advisories: AdvisoryPolicy::Off,
+            advisory_deny_cvss: 7.0,
+            advisory_waivers: Vec::new(),
         }
     }
 }
@@ -55,5 +70,49 @@ mod tests {
             }
             .allows_time(None, now)
         );
+    }
+
+    #[test]
+    fn advisory_defaults_and_inheritance_validation() {
+        let mut config = crate::config::Config::default();
+        assert_eq!(
+            config
+                .policy_for(crate::registry::Ecosystem::Npm)
+                .advisories,
+            AdvisoryPolicy::Off
+        );
+        config.policy.advisories = AdvisoryPolicy::Deny;
+        assert!(config.validate().is_err());
+        config.homebrew.policy.advisories = Some(AdvisoryPolicy::Off);
+        config.apt.policy.advisories = Some(AdvisoryPolicy::Off);
+        assert!(config.validate().is_ok());
+        config.pip.advisory_deny_cvss = Some(10.1);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn apt_advisories_require_explicit_release_mapping() {
+        use crate::config::{AptRepo, Config};
+        let mut config = Config::default();
+        config.apt.enabled = true;
+        config.apt.policy.advisories = Some(AdvisoryPolicy::Report);
+        config
+            .upstream
+            .artifact_hosts
+            .push("archive.ubuntu.com".into());
+        config.apt.repos = vec![AptRepo {
+            name: "ubuntu".into(),
+            url: "https://archive.ubuntu.com/ubuntu".into(),
+            suites: vec!["noble".into()],
+            components: vec!["main".into()],
+            architectures: vec!["amd64".into()],
+            min_age_days: None,
+            osv_ecosystem: None,
+        }];
+        assert!(config.validate().is_err());
+        config.apt.repos[0].osv_ecosystem = Some("Ubuntu:24.04:LTS".into());
+        assert!(config.validate().is_ok(), "{:?}", config.validate());
+        config.apt.repos[0].osv_ecosystem = Some("Ubuntu:noble".into());
+        assert!(config.validate().is_err());
     }
 }

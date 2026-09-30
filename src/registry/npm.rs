@@ -12,7 +12,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 pub(crate) async fn raw(app: &App, package: &str) -> Result<Arc<Value>> {
     npm_name(package)?;
@@ -28,6 +28,15 @@ pub(crate) async fn raw(app: &App, package: &str) -> Result<Arc<Value>> {
 }
 
 pub fn filter(raw: &Value, policy: &Policy, now: DateTime<Utc>) -> Result<Value> {
+    filter_with_blocked(raw, policy, now, &HashSet::new())
+}
+
+fn filter_with_blocked(
+    raw: &Value,
+    policy: &Policy,
+    now: DateTime<Utc>,
+    blocked: &HashSet<String>,
+) -> Result<Value> {
     let mut doc = raw.clone();
     let times = raw
         .get("time")
@@ -38,13 +47,14 @@ pub fn filter(raw: &Value, policy: &Policy, now: DateTime<Utc>) -> Result<Value>
         .and_then(Value::as_object_mut)
         .ok_or_else(|| Error::upstream("invalid npm versions"))?;
     versions.retain(|v, info| {
-        policy.allows_time(times.get(v).and_then(Value::as_str), now)
+        !blocked.contains(v)
+            && policy.allows_time(times.get(v).and_then(Value::as_str), now)
             && (policy.install_hooks != crate::inspection::HookPolicy::Deny
                 || !crate::inspection::npm(info).dependency_execution)
     });
     if versions.is_empty() {
         return Err(Error::denied(
-            "no npm versions meet the age and install-hook policies",
+            "no npm versions meet the age, hook, and advisory policies",
         ));
     }
     let allowed = versions
@@ -88,6 +98,26 @@ pub async fn handle(
     let raw = raw(&app, package).await?;
     app.check_downloads(Ecosystem::Npm, package).await?;
     let mut doc = filter(&raw, &app.config.policy_for(Ecosystem::Npm), Utc::now())?;
+    let needs_batch = suffix.is_empty() || raw["dist-tags"].get(suffix).is_some();
+    if needs_batch {
+        let versions = doc["versions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let blocked = app
+            .blocked_advisory_versions(Ecosystem::Npm, package, &versions)
+            .await?;
+        if !blocked.is_empty() {
+            doc = filter_with_blocked(
+                &raw,
+                &app.config.policy_for(Ecosystem::Npm),
+                Utc::now(),
+                &blocked,
+            )?;
+        }
+    }
     if let Some(filename) = suffix.strip_prefix("-/") {
         // npm lockfiles may refer to the conventional registry tarball path.
         let (version, url) = doc["versions"]
@@ -107,6 +137,8 @@ pub async fn handle(
             .ok_or_else(|| Error::denied("tarball does not belong to an eligible npm version"))?;
         let identity = (method == Method::GET)
             .then(|| crate::stats::Identity::new(Ecosystem::Npm, package, version));
+        app.check_advisories(Ecosystem::Npm, package, version)
+            .await?;
         return app.stream_download(url, headers, identity).await;
     }
     for (version, info) in doc["versions"].as_object_mut().unwrap() {
@@ -127,6 +159,8 @@ pub async fn handle(
         let info = doc["versions"].get(version).cloned().ok_or_else(|| {
             Error::denied("requested npm version or tag is unavailable under policy")
         })?;
+        app.check_advisories(Ecosystem::Npm, package, version)
+            .await?;
         return Ok(json_response(info, "application/json"));
     }
     Ok(json_response(doc, "application/json"))
@@ -155,6 +189,8 @@ pub async fn artifact(
     {
         return Err(Error::denied("npm artifact is not eligible"));
     }
+    app.check_advisories(Ecosystem::Npm, package, version)
+        .await?;
     raw["versions"]
         .get(version)
         .and_then(|v| v.pointer("/dist/tarball"))

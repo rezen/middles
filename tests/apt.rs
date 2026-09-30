@@ -9,6 +9,7 @@ use http_body_util::BodyExt;
 use middles::{
     App,
     config::{AptRepo, Config},
+    policy::AdvisoryPolicy,
 };
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -38,12 +39,16 @@ async fn fixture(age: u32) -> Fixture {
 }
 
 async fn fixture_with_gzip(age: u32, gzip: bool) -> Fixture {
+    fixture_with_advisories(age, gzip, false).await
+}
+
+async fn fixture_with_advisories(age: u32, gzip: bool, advisories: bool) -> Fixture {
     let hits = Arc::new(AtomicUsize::new(0));
     let indexes = Arc::new(AtomicUsize::new(0));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let package = format!(
-        "Package: demo\nVersion: 1:2.0-1\nArchitecture: all\nFilename: pool/demo_2.0_all.deb\nSHA256: {}\nSize: 7\n\n",
+        "Package: demo\nVersion: 1:2.0-1\nSource: source-demo (1:2.0-1)\nArchitecture: all\nFilename: pool/demo_2.0_all.deb\nSHA256: {}\nSize: 7\n\n",
         "a".repeat(64)
     );
     let package = Arc::new(package.into_bytes());
@@ -64,7 +69,7 @@ async fn fixture_with_gzip(age: u32, gzip: bool) -> Fixture {
         .into_bytes(),
     );
     let signed = Arc::new(format!("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n{}-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n", String::from_utf8_lossy(&release)).into_bytes());
-    let other_package = Arc::new(format!("Package: demo\nVersion: 1:2.0-1\nArchitecture: all\nFilename: pool/demo_2.0_all.deb\nSHA256: {}\nSize: 7\n\n", "b".repeat(64)).into_bytes());
+    let other_package = Arc::new(format!("Package: demo\nVersion: 1:2.0-1\nSource: source-demo (1:2.0-1)\nArchitecture: all\nFilename: pool/demo_2.0_all.deb\nSHA256: {}\nSize: 7\n\n", "b".repeat(64)).into_bytes());
     let other_release = Arc::new(
         format!(
             "Suite: other\nAcquire-By-Hash: no\nSHA256:\n {:x} {} main/binary-amd64/Packages\n",
@@ -87,6 +92,14 @@ async fn fixture_with_gzip(age: u32, gzip: bool) -> Fixture {
         let other_release = other_release.clone();
         async move {
             match request.uri().path() {
+                "/v1/query" if advisories => {
+                    let body = request.into_body().collect().await.unwrap().to_bytes();
+                    let query: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(query["package"]["ecosystem"], "Debian:12");
+                    assert_eq!(query["package"]["name"], "source-demo");
+                    assert_eq!(query["version"], "1:2.0-1");
+                    axum::Json(serde_json::json!({"vulns":[{"id":"DEBIAN-CVE-1","database_specific":{"severity":"HIGH"}}]})).into_response()
+                }
                 "/dists/test/InRelease" => {
                     (StatusCode::OK, signed.as_ref().clone()).into_response()
                 }
@@ -147,12 +160,17 @@ async fn fixture_with_gzip(age: u32, gzip: bool) -> Fixture {
     config.apt.policy.min_age_days = Some(age);
     config.apt.repos = vec![AptRepo {
         name: "test".into(),
-        url: origin,
+        url: origin.clone(),
         suites: vec!["test".into()],
         components: vec!["main".into()],
         architectures: vec!["amd64".into()],
         min_age_days: None,
+        osv_ecosystem: advisories.then(|| "Debian:12".into()),
     }];
+    if advisories {
+        config.apt.policy.advisories = Some(AdvisoryPolicy::Deny);
+        config.upstream.osv = origin;
+    }
     config.upstream.allow_http = true;
     config.upstream.artifact_hosts = vec!["127.0.0.1".into()];
     let app = App::new(config).await.unwrap();
@@ -189,6 +207,26 @@ async fn get(app: &App, method: &str, uri: &str) -> (StatusCode, Vec<u8>) {
             .to_bytes()
             .to_vec(),
     )
+}
+
+#[tokio::test]
+async fn apt_advisories_use_signed_source_identity_and_gate_get_head() {
+    let f = fixture_with_advisories(0, false, true).await;
+    let check = get(&f.app, "GET", "/apt/test/check/pool/demo_2.0_all.deb").await;
+    assert_eq!(check.0, StatusCode::OK);
+    let doc: serde_json::Value = serde_json::from_slice(&check.1).unwrap();
+    assert_eq!(doc["source_package"], "source-demo");
+    assert_eq!(doc["source_version"], "1:2.0-1");
+    assert_eq!(doc["advisories"][0]["blocked_by_advisory_policy"], true);
+    for method in ["GET", "HEAD"] {
+        assert_eq!(
+            get(&f.app, method, "/apt/test/pool/demo_2.0_all.deb")
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(f.hits.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

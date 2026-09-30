@@ -181,11 +181,25 @@ pub async fn dependencies(
             Err(e) if e.0 == StatusCode::NOT_FOUND => continue,
             Err(e) => return Err(e),
         };
-        for release in parse(
+        let releases = parse(
             data.as_str()
                 .ok_or_else(|| Error::upstream("invalid cached RubyGems info"))?,
-        )? {
+        )?;
+        let versions = releases
+            .iter()
+            .filter(|r| policy.allows_time(r.created_at, now))
+            .map(|r| r.version.to_owned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let blocked = app
+            .blocked_advisory_versions(Ecosystem::Rubygems, name, &versions)
+            .await?;
+        for release in releases {
             if !policy.allows_time(release.created_at, now) {
+                continue;
+            }
+            if blocked.contains(release.version) {
                 continue;
             }
             marshal_release(&mut entries, name, &release);
@@ -298,13 +312,18 @@ async fn authorize(app: &App, stem: &str, now: DateTime<Utc>) -> Result<(String,
                 selected = Some((
                     name.to_owned(),
                     canonical,
+                    release.version.to_owned(),
                     policy.allows_time(release.created_at, now),
                 ));
             }
         }
     }
     match selected {
-        Some((name, identity, true)) => Ok((name, identity)),
+        Some((name, identity, version, true)) => {
+            app.check_advisories(Ecosystem::Rubygems, &name, &version)
+                .await?;
+            Ok((name, identity))
+        }
         Some(_) => Err(Error::denied("gem does not meet the age policy")),
         None => Err(Error::missing("gem release not found")),
     }

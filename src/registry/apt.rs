@@ -26,6 +26,8 @@ use std::{collections::BTreeMap, io::Read, sync::Arc, time::Duration};
 struct Stanza {
     package: String,
     version: String,
+    source_package: String,
+    source_version: String,
     architecture: String,
     filename: String,
     sha256: String,
@@ -125,8 +127,20 @@ async fn dispatch(
         if !file.ends_with(".deb") || *method != Method::GET {
             return Err(Error::bad("invalid APT diagnostic path"));
         }
-        let (stanza, age) = authorize(app, repo, file).await?;
-        return Ok(json_response(&stanza, age));
+        let (stanza, age, ecosystems) = authorize(app, repo, file).await?;
+        let mut reports = Vec::new();
+        for osv in ecosystems {
+            reports.push(
+                app.advisory_report_mapped(
+                    Ecosystem::Apt,
+                    &osv,
+                    &stanza.source_package,
+                    &stanza.source_version,
+                )
+                .await?,
+            );
+        }
+        return Ok(json_response(&stanza, age, json!(reports)));
     }
     if rest.starts_with("dists/") {
         if [".deb", ".udeb", ".dsc", ".tar", ".tar.gz", ".tar.xz"]
@@ -167,7 +181,7 @@ async fn dispatch(
     if !rest.ends_with(".deb") {
         return Err(Error::missing("unsupported APT download class"));
     }
-    let (stanza, age) = authorize(app, repo, rest).await?;
+    let (stanza, age, ecosystems) = authorize(app, repo, rest).await?;
     if !age["eligible"].as_bool().unwrap_or(false) {
         let body = serde_json::to_vec(&diagnostic(&stanza, age)).unwrap();
         return Response::builder()
@@ -181,6 +195,15 @@ async fn dispatch(
                 Body::from(body)
             })
             .map_err(|_| Error::internal("APT denial response"));
+    }
+    for osv in ecosystems {
+        app.check_advisories_mapped(
+            Ecosystem::Apt,
+            &osv,
+            &stanza.source_package,
+            &stanza.source_version,
+        )
+        .await?;
     }
     let url = format!("{}/{}", repo.url.trim_end_matches('/'), rest);
     let identity = (*method == Method::GET).then(|| {
@@ -283,8 +306,10 @@ async fn release_index(app: &App, repo: &AptRepo, suite: &str) -> Result<Release
     parse_release(&raw)
 }
 
-fn json_response(stanza: &Stanza, age: Value) -> Response {
-    let body = serde_json::to_vec(&diagnostic(stanza, age)).unwrap();
+fn json_response(stanza: &Stanza, age: Value, advisories: Value) -> Response {
+    let mut value = diagnostic(stanza, age);
+    value["advisories"] = advisories;
+    let body = serde_json::to_vec(&value).unwrap();
     Response::builder()
         .header("content-type", "application/json")
         .header("content-length", body.len())
@@ -294,13 +319,13 @@ fn json_response(stanza: &Stanza, age: Value) -> Response {
 }
 
 fn diagnostic(stanza: &Stanza, age: Value) -> Value {
-    json!({"package":stanza.package,"version":stanza.version,"architecture":stanza.architecture,
+    json!({"package":stanza.package,"version":stanza.version,"source_package":stanza.source_package,"source_version":stanza.source_version,"architecture":stanza.architecture,
         "filename":stanza.filename,"sha256":stanza.sha256,"size":stanza.size,"age":age,
         "install_hooks":{"status":"unavailable","limitations":"Maintainer scripts are inside the .deb and may run as root on the client."}})
 }
 
-async fn authorize(app: &App, repo: &AptRepo, file: &str) -> Result<(Stanza, Value)> {
-    let mut found = Vec::new();
+async fn authorize(app: &App, repo: &AptRepo, file: &str) -> Result<(Stanza, Value, Vec<String>)> {
+    let mut found: Vec<(Stanza, Option<String>)> = Vec::new();
     let mut effective_days = u32::MAX;
     let mut named_listed = false;
     for candidate in &app.config.apt.repos {
@@ -310,7 +335,12 @@ async fn authorize(app: &App, repo: &AptRepo, file: &str) -> Result<(Stanza, Val
                 for arch in &candidate.architectures {
                     let index = index(app, candidate, suite, component, arch).await?;
                     if let Some(stanzas) = index.get(file) {
-                        found.extend(stanzas.iter().cloned());
+                        found.extend(
+                            stanzas
+                                .iter()
+                                .cloned()
+                                .map(|stanza| (stanza, candidate.osv_ecosystem.clone())),
+                        );
                         listed = true;
                     }
                 }
@@ -332,15 +362,23 @@ async fn authorize(app: &App, repo: &AptRepo, file: &str) -> Result<(Stanza, Val
             "APT archive is absent from configured indexes",
         ));
     }
-    if found
-        .iter()
-        .any(|s| s.sha256 != found[0].sha256 || s.size != found[0].size)
-    {
+    if found.iter().any(|(s, _)| {
+        s.sha256 != found[0].0.sha256
+            || s.size != found[0].0.size
+            || s.source_package != found[0].0.source_package
+            || s.source_version != found[0].0.source_version
+    }) {
         return Err(Error::denied(
             "ambiguous APT archive checksum across configured indexes",
         ));
     }
-    let stanza = found.remove(0);
+    let ecosystems = found
+        .iter()
+        .filter_map(|(_, osv)| osv.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let stanza = found.remove(0).0;
     let first_seen = app
         .store
         .observe(vec![format!("apt:{}", stanza.sha256)])
@@ -353,7 +391,7 @@ async fn authorize(app: &App, repo: &AptRepo, file: &str) -> Result<(Stanza, Val
     if !eligible {
         tracing::info!(package = %stanza.package, version = %stanza.version, first_seen, eligible_at, "APT archive blocked by age policy");
     }
-    Ok((stanza, age))
+    Ok((stanza, age, ecosystems))
 }
 
 async fn index(
@@ -554,7 +592,7 @@ fn parse_index(body: &[u8]) -> Result<Index> {
                 .ok_or_else(|| Error::upstream("malformed Packages field"))?;
             previous_identity = matches!(
                 name,
-                "Package" | "Version" | "Architecture" | "Filename" | "SHA256" | "Size"
+                "Package" | "Version" | "Source" | "Architecture" | "Filename" | "SHA256" | "Size"
             );
             if previous_identity && fields.insert(name, value.trim()).is_some() {
                 return Err(Error::upstream("duplicate Packages identity field"));
@@ -568,6 +606,18 @@ fn parse_index(body: &[u8]) -> Result<Index> {
         };
         let package = field("Package")?;
         let version = field("Version")?;
+        let source = fields.get("Source").copied();
+        let (source_package, source_version) = match source {
+            None => (package, version),
+            Some(value) if value.contains(" (") => {
+                let (name, rest) = value.split_once(" (").unwrap();
+                let source_version = rest
+                    .strip_suffix(')')
+                    .ok_or_else(|| Error::upstream("invalid Packages Source field"))?;
+                (name, source_version)
+            }
+            Some(value) => (value, version),
+        };
         let architecture = field("Architecture")?;
         let filename = field("Filename")?;
         let sha256 = field("SHA256")?;
@@ -576,6 +626,8 @@ fn parse_index(body: &[u8]) -> Result<Index> {
             .map_err(|_| Error::upstream("invalid Packages Size"))?;
         if !token(package, 214, b"+.-")
             || !token(version, 256, b"+.:~-")
+            || !token(source_package, 214, b"+.-")
+            || !token(source_version, 256, b"+.:~-")
             || !token(architecture, 64, b"_-")
             || !valid_path(filename)
             || !filename.ends_with(".deb")
@@ -588,6 +640,8 @@ fn parse_index(body: &[u8]) -> Result<Index> {
         let stanza = Stanza {
             package: package.into(),
             version: version.into(),
+            source_package: source_package.into(),
+            source_version: source_version.into(),
             architecture: architecture.into(),
             filename: filename.into(),
             sha256: sha256.to_ascii_lowercase(),
