@@ -1,9 +1,9 @@
 class Middles < Formula
   desc "Policy-enforcing package registry proxy"
   homepage "https://github.com/rezen/middles"
-  url "https://github.com/rezen/middles/archive/eb777e9e6dd6fb2bb768c042f62fc1cd8f1f4a01.tar.gz"
-  version "0.2.1"
-  sha256 "5ef7601350cf3b9ba0934a884f4a7d85fed374cc1fad044c2d7350dea5780913"
+  url "https://github.com/rezen/middles/archive/refs/tags/v0.2.2.tar.gz"
+  version "0.2.2"
+  sha256 "7ff6a199a4c08fb2f56a169d8dc63970f2d6bbf46eece39bdad34c7d9e414c14"
   license "MIT"
 
   depends_on "rust" => :build
