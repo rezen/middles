@@ -19,7 +19,7 @@ cp middles.example.toml middles.toml
 ./target/release/middles --config middles.toml
 ```
 
-Without `--config`, it listens on `127.0.0.1:8080`, requires seven days of age, disables download thresholds, and uses `data/cache.sqlite3`. `GET /healthz` reports process health. Set `RUST_LOG=middles=debug,tower_http=debug` for request logging. SIGINT and SIGTERM initiate graceful shutdown.
+Without `--config`, it listens on `127.0.0.1:8080`, requires seven days of age, disables download thresholds, and uses `data/cache.sqlite3`. `GET /healthz` reports process health, and `GET /ui` serves a built-in statistics dashboard. Set `RUST_LOG=middles=debug,tower_http=debug` for request logging. SIGINT and SIGTERM initiate graceful shutdown.
 
 Set `public_url` to the address clients can reach. All rewritten archive URLs use this configured value, never the request's Host header. A reverse proxy may mount the service under a prefix if it strips that prefix before forwarding. Restart to apply configuration changes; cached raw metadata is evaluated using the new policy immediately.
 
@@ -274,6 +274,12 @@ curl 'http://127.0.0.1:8080/stats'
 curl 'http://127.0.0.1:8080/stats?ecosystem=npm&package=esbuild'
 curl 'http://127.0.0.1:8080/stats?limit=50&offset=50'
 ```
+
+`GET /ui` renders the same report as a dashboard: totals, per-ecosystem
+charts, and the paginated release list, with the same `ecosystem` and
+`package` filters. The page is embedded in the binary and loads no external
+assets; it only calls the relative `stats` endpoint, so it works behind a
+stripping reverse-proxy prefix.
 
 Each release includes `ecosystem`, `package`, `release`, `full_downloads`,
 `range_transfers`, `bytes`, `first_download`, and `last_download`. Totals also

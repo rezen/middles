@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>middles</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --critical: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --critical: #d03b3b;
+  }
+}
+* { box-sizing: border-box; margin: 0; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 24px 20px 48px;
+}
+.wrap { max-width: 1080px; margin: 0 auto; }
+header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+header h1 { font-size: 20px; font-weight: 650; }
+header .sub { color: var(--ink-2); }
+header a { color: var(--ink-2); margin-left: auto; font-size: 13px; }
+.filters {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.filters label { color: var(--ink-2); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.filters select, .filters input, .filters button {
+  font: inherit; color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+.filters input { width: 220px; }
+.filters button { cursor: pointer; }
+.filters button:hover { border-color: var(--baseline); }
+.filters .status { color: var(--muted); font-size: 12px; margin-left: auto; }
+#error {
+  display: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--critical);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+}
+#error.show { display: block; }
+#app.loading { opacity: 0.55; transition: opacity 0.15s; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.tile .label { color: var(--ink-2); font-size: 12px; }
+.tile .value { font-size: 26px; font-weight: 600; margin-top: 2px; }
+.tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.card h2 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.card h2 .key {
+  display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  margin-right: 6px; vertical-align: baseline;
+}
+.bar-row {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 28px; padding: 2px 0;
+  border-radius: 4px;
+}
+.bar-row:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+.bar-row:hover .bar, .bar-row:focus-visible .bar { filter: brightness(1.12); }
+.bar-cat {
+  flex: 0 0 90px; text-align: right;
+  color: var(--ink-2); font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bar-track {
+  flex: 1; display: flex; align-items: center; gap: 6px;
+  border-left: 1px solid var(--baseline);
+  padding-left: 1px;
+  align-self: stretch;
+}
+.bar { height: 20px; border-radius: 0 4px 4px 0; }
+.bar.s1 { background: var(--series-1); }
+.bar.s2 { background: var(--series-2); }
+.bar-val { color: var(--ink); font-size: 12px; white-space: nowrap; }
+.empty { color: var(--muted); padding: 12px 0; }
+details.tableview { margin-bottom: 16px; color: var(--ink-2); }
+details.tableview summary { cursor: pointer; font-size: 13px; padding: 4px 2px; }
+details.tableview .card { margin-top: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 6px 10px; text-align: left; white-space: nowrap; }
+th {
+  color: var(--muted); font-weight: 500; font-size: 12px;
+  border-bottom: 1px solid var(--grid);
+}
+td { border-bottom: 1px solid var(--grid); }
+tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.trunc { max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+td.time { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tablewrap { overflow-x: auto; }
+.pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.pager button {
+  font: inherit; color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 12px; cursor: pointer;
+}
+.pager button:disabled { color: var(--muted); cursor: default; }
+.pager .range { color: var(--muted); font-size: 12px; }
+.limitations { color: var(--muted); font-size: 12px; margin-top: 16px; }
+#tooltip {
+  position: fixed; z-index: 10; display: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  padding: 8px 10px; font-size: 12px;
+  pointer-events: none; max-width: 260px;
+}
+#tooltip .tip-title { font-weight: 600; margin-bottom: 4px; }
+#tooltip .tip-row { display: flex; justify-content: space-between; gap: 14px; }
+#tooltip .tip-row .v { font-weight: 600; font-variant-numeric: tabular-nums; }
+#tooltip .tip-row .k { color: var(--ink-2); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>middles</h1>
+    <span class="sub">artifact transfer statistics</span>
+    <a id="raw" href="stats">raw JSON</a>
+  </header>
+  <div class="filters">
+    <label>Ecosystem
+      <select id="ecosystem">
+        <option value="">All</option>
+        <option value="npm">npm</option>
+        <option value="pip">pip</option>
+        <option value="composer">composer</option>
+        <option value="rubygems">rubygems</option>
+        <option value="homebrew">homebrew</option>
+        <option value="apt">apt</option>
+      </select>
+    </label>
+    <label>Package
+      <input id="package" placeholder="exact name, e.g. esbuild" spellcheck="false">
+    </label>
+    <button id="reset" type="button">Reset</button>
+    <button id="refresh" type="button">Refresh</button>
+    <span class="status" id="status"></span>
+  </div>
+  <div id="error"></div>
+  <div id="app">
+    <section class="tiles" id="tiles"></section>
+    <section class="charts">
+      <div class="card">
+        <h2><span class="key" style="background: var(--series-1)"></span>Full downloads by ecosystem</h2>
+        <div id="chart-downloads"></div>
+      </div>
+      <div class="card">
+        <h2><span class="key" style="background: var(--series-2)"></span>Bytes served by ecosystem</h2>
+        <div id="chart-bytes"></div>
+      </div>
+    </section>
+    <details class="tableview">
+      <summary>Ecosystem totals as a table</summary>
+      <div class="card tablewrap">
+        <table>
+          <thead><tr>
+            <th>Ecosystem</th><th class="num">Packages</th><th class="num">Releases</th>
+            <th class="num">Full downloads</th><th class="num">Range transfers</th><th class="num">Bytes</th>
+          </tr></thead>
+          <tbody id="ecosystem-rows"></tbody>
+        </table>
+      </div>
+    </details>
+    <section class="card">
+      <h2>Releases, most recent transfer first</h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th>Ecosystem</th><th>Package</th><th>Release</th>
+            <th class="num">Full</th><th class="num">Range</th><th class="num">Bytes</th>
+            <th>First</th><th>Last</th>
+          </tr></thead>
+          <tbody id="release-rows"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="prev" type="button">Previous</button>
+        <button id="next" type="button">Next</button>
+        <span class="range" id="range"></span>
+      </div>
+    </section>
+    <p class="limitations" id="limitations"></p>
+  </div>
+</div>
+<div id="tooltip" role="status"></div>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const state = { ecosystem: "", package: "", offset: 0, limit: 100 };
+const intFmt = new Intl.NumberFormat("en-US");
+const compactFmt = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
+
+function bytesText(n) {
+  if (n < 1024) return intFmt.format(n) + " B";
+  let v = n;
+  for (const unit of ["KB", "MB", "GB", "TB", "PB"]) {
+    v /= 1024;
+    if (v < 1024 || unit === "PB") return (v >= 100 ? Math.round(v) : v.toFixed(1)) + " " + unit;
+  }
+}
+const pad = n => String(n).padStart(2, "0");
+function timeText(sec) {
+  if (sec == null) return "—";
+  const d = new Date(sec * 1000);
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+    " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+function agoText(sec) {
+  if (sec == null) return "never";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - sec));
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 172800) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs || {})) {
+    if (key === "text") node.textContent = value;
+    else node.setAttribute(key, value);
+  }
+  node.append(...children);
+  return node;
+}
+
+const tooltip = $("tooltip");
+function showTooltip(title, rows, x, y) {
+  tooltip.replaceChildren(
+    el("div", { class: "tip-title", text: title }),
+    ...rows.map(([k, v]) => el("div", { class: "tip-row" },
+      el("span", { class: "k", text: k }), el("span", { class: "v", text: v })))
+  );
+  tooltip.style.display = "block";
+  const r = tooltip.getBoundingClientRect();
+  tooltip.style.left = Math.min(x + 14, innerWidth - r.width - 8) + "px";
+  tooltip.style.top = Math.min(y + 14, innerHeight - r.height - 8) + "px";
+}
+function hideTooltip() { tooltip.style.display = "none"; }
+function attachTooltip(node, title, rows) {
+  node.addEventListener("pointermove", e => showTooltip(title, rows, e.clientX, e.clientY));
+  node.addEventListener("pointerleave", hideTooltip);
+  node.addEventListener("focus", () => {
+    const r = node.getBoundingClientRect();
+    showTooltip(title, rows, r.left + r.width / 2, r.bottom);
+  });
+  node.addEventListener("blur", hideTooltip);
+}
+
+function tile(label, value, note) {
+  return el("div", { class: "tile" },
+    el("div", { class: "label", text: label }),
+    el("div", { class: "value", text: value }),
+    note ? el("div", { class: "note", text: note }) : "");
+}
+
+function ecosystemTips(row) {
+  return [
+    ["Full downloads", intFmt.format(row.full_downloads)],
+    ["Range transfers", intFmt.format(row.range_transfers)],
+    ["Bytes", bytesText(row.bytes)],
+    ["Packages", intFmt.format(row.packages)],
+    ["Releases", intFmt.format(row.releases)],
+  ];
+}
+function barChart(container, rows, value, colorClass, format) {
+  container.replaceChildren();
+  if (!rows.length) {
+    container.append(el("p", { class: "empty", text: "No transfers recorded yet." }));
+    return;
+  }
+  const max = Math.max(...rows.map(value), 1);
+  for (const row of rows) {
+    const bar = el("div", { class: "bar " + colorClass });
+    bar.style.width = "calc((100% - 64px) * " + (value(row) / max) + ")";
+    const node = el("div", {
+      class: "bar-row", tabindex: "0", role: "img",
+      "aria-label": row.ecosystem + ": " + format(value(row)),
+    },
+      el("span", { class: "bar-cat", text: row.ecosystem, title: row.ecosystem }),
+      el("div", { class: "bar-track" }, bar, el("span", { class: "bar-val", text: format(value(row)) })));
+    attachTooltip(node, row.ecosystem, ecosystemTips(row));
+    container.append(node);
+  }
+}
+
+function render(data) {
+  const t = data.totals;
+  $("tiles").replaceChildren(
+    tile("Full downloads", compactFmt.format(t.full_downloads)),
+    tile("Range transfers", compactFmt.format(t.range_transfers)),
+    tile("Bytes served", bytesText(t.bytes)),
+    tile("Packages", compactFmt.format(t.packages)),
+    tile("Releases", compactFmt.format(t.releases)),
+    tile("Last transfer", agoText(t.last_download), t.last_download == null ? "" : timeText(t.last_download)));
+  barChart($("chart-downloads"), data.ecosystems, r => r.full_downloads, "s1", n => compactFmt.format(n));
+  barChart($("chart-bytes"), data.ecosystems, r => r.bytes, "s2", bytesText);
+  $("ecosystem-rows").replaceChildren(...data.ecosystems.map(row => el("tr", {},
+    el("td", { text: row.ecosystem }),
+    el("td", { class: "num", text: intFmt.format(row.packages) }),
+    el("td", { class: "num", text: intFmt.format(row.releases) }),
+    el("td", { class: "num", text: intFmt.format(row.full_downloads) }),
+    el("td", { class: "num", text: intFmt.format(row.range_transfers) }),
+    el("td", { class: "num", text: intFmt.format(row.bytes), title: bytesText(row.bytes) }))));
+  const releases = data.releases.map(row => el("tr", {},
+    el("td", { text: row.ecosystem }),
+    el("td", { class: "trunc", text: row.package, title: row.package }),
+    el("td", { class: "trunc", text: row.release, title: row.release }),
+    el("td", { class: "num", text: intFmt.format(row.full_downloads) }),
+    el("td", { class: "num", text: intFmt.format(row.range_transfers) }),
+    el("td", { class: "num", text: bytesText(row.bytes), title: intFmt.format(row.bytes) + " bytes" }),
+    el("td", { class: "time", text: timeText(row.first_download) }),
+    el("td", { class: "time", text: timeText(row.last_download) })));
+  $("release-rows").replaceChildren(...(releases.length ? releases :
+    [el("tr", {}, el("td", { class: "empty", colspan: "8", text: "No transfers recorded yet." }))]));
+  $("prev").disabled = state.offset === 0;
+  $("next").disabled = state.offset + data.releases.length >= t.releases;
+  $("range").textContent = t.releases === 0 ? "" :
+    "showing " + intFmt.format(state.offset + 1) + "–" +
+    intFmt.format(state.offset + data.releases.length) + " of " + intFmt.format(t.releases);
+  $("limitations").textContent = data.limitations || "";
+}
+
+function query() {
+  const p = new URLSearchParams();
+  if (state.ecosystem) p.set("ecosystem", state.ecosystem);
+  if (state.package) p.set("package", state.package);
+  p.set("limit", state.limit);
+  p.set("offset", state.offset);
+  return p;
+}
+let inflight = false;
+async function load() {
+  if (inflight) return;
+  inflight = true;
+  const app = $("app");
+  app.classList.add("loading");
+  try {
+    const url = "stats?" + query();
+    $("raw").href = url;
+    const response = await fetch(url, { headers: { accept: "application/json" } });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "status " + response.status);
+    render(data);
+    $("error").classList.remove("show");
+    const now = new Date();
+    $("status").textContent = "updated " + pad(now.getHours()) + ":" + pad(now.getMinutes()) +
+      ":" + pad(now.getSeconds()) + " · refreshes every 60s";
+  } catch (error) {
+    $("error").textContent = "Could not load statistics: " + error.message;
+    $("error").classList.add("show");
+  } finally {
+    app.classList.remove("loading");
+    inflight = false;
+  }
+}
+
+$("ecosystem").addEventListener("change", () => {
+  state.ecosystem = $("ecosystem").value;
+  state.offset = 0;
+  load();
+});
+$("package").addEventListener("change", () => {
+  state.package = $("package").value.trim();
+  state.offset = 0;
+  load();
+});
+$("package").addEventListener("keydown", e => { if (e.key === "Enter") e.target.blur(); });
+$("reset").addEventListener("click", () => {
+  state.ecosystem = state.package = "";
+  state.offset = 0;
+  $("ecosystem").value = "";
+  $("package").value = "";
+  load();
+});
+$("refresh").addEventListener("click", load);
+$("prev").addEventListener("click", () => {
+  state.offset = Math.max(0, state.offset - state.limit);
+  load();
+});
+$("next").addEventListener("click", () => {
+  state.offset += state.limit;
+  load();
+});
+setInterval(() => { if (!document.hidden) load(); }, 60000);
+load();
+</script>
+</body>
+</html>

@@ -710,3 +710,28 @@ async fn local_stats_exclude_denials_and_count_concurrent_downloads() {
     assert_eq!(stats["totals"]["bytes"], 84);
     assert_eq!(stats["totals"]["packages"], 1);
 }
+
+#[tokio::test]
+async fn ui_serves_embedded_dashboard_html() {
+    let f = fixture(0, 0, 0).await;
+    let response = f
+        .router
+        .clone()
+        .oneshot(Request::builder().uri("/ui").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let page = std::str::from_utf8(&body).unwrap();
+    // The dashboard is self-contained: it may only fetch the same-origin stats endpoint.
+    assert!(page.contains("<title>middles</title>"));
+    assert!(page.contains("\"stats?\""));
+    assert!(!page.contains("https://"));
+}

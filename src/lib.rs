@@ -11,7 +11,7 @@ use axum::{
     body::Body,
     extract::{Path, State},
     http::{HeaderMap, Method, StatusCode},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::get,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -81,6 +81,15 @@ impl App {
             )
             .route("/npm/{*path}", get(registry::npm::handle))
             .route("/stats", get(stats::handle))
+            .route(
+                "/ui",
+                get(|| async {
+                    (
+                        [("cache-control", "no-store")],
+                        Html(include_str!("ui.html")),
+                    )
+                }),
+            )
             .route(
                 "/rubygems/api/v1/dependencies",
                 get(registry::rubygems::dependencies),
