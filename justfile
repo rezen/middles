@@ -16,10 +16,6 @@ release:
 bump-version *args:
     scripts/bump-version.sh "$@"
 
-# Update the Homebrew formula after publishing a matching release tag.
-update-homebrew-formula *args:
-    scripts/update-homebrew-formula.sh "$@"
-
 # Check compilation without producing a binary.
 check:
     cargo check --all-targets --locked

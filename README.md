@@ -14,26 +14,18 @@ Requires current stable Rust and a C toolchain to build bundled SQLite and the x
 
 ### Install with Homebrew
 
-This repository also contains a Homebrew formula. Tap this repository by its
-explicit URL (the one-argument `brew tap` shorthand expects a repository named
-`homebrew-middles`):
+The [Homebrew tap](https://github.com/rezen/homebrew-tap) contains a formula
+that builds middles from source:
 
 ```sh
-brew tap rezen/middles https://github.com/rezen/middles.git
-brew install rezen/middles/middles
+brew install rezen/tap/middles
 middles --version
 ```
 
 The formula builds from source and installs the example configuration at
 `$(brew --prefix)/share/middles/middles.example.toml`. Copy it to a writable
 location before customizing it; the default configuration also works without a
-file. To update the formula for a new release, publish a matching tag and run
-`just update-homebrew-formula`. The script downloads the tagged source archive
-and updates the formula URL, version, and SHA-256. Then run `brew style`,
-`brew audit`, `brew install --build-from-source` and `brew test`; CI runs those
-checks on macOS. The `v0.2.1` tag predates its
-Cargo version bump, so the initial formula uses the first commit that reports
-`0.2.1`; future formulas should use matching release tags.
+file. Formula updates and Homebrew CI live in the tap repository.
 
 ```sh
 cargo build --release --locked
@@ -449,10 +441,9 @@ It binds to loopback by default and has no built-in user authentication. Put sha
 
 Run `just bump-version` to increment the patch version in `Cargo.toml` and
 `Cargo.lock`, or `just bump-version 0.3.0` to set an explicit version. Review
-the changes before tagging a release. After the tag is published, run
-`just update-homebrew-formula` to set the formula URL, version, and checksum
-from that exact source archive. The two steps are separate because the archive
-checksum cannot be computed before the tag exists.
+the changes before tagging a release. After the tag is published, update
+`rezen/homebrew-tap` with its `scripts/update-homebrew-formula.sh` script. The
+formula checksum cannot be computed before the tag exists.
 
 With `just` installed, run `just` to list recipes:
 
@@ -460,7 +451,6 @@ With `just` installed, run `just` to list recipes:
 just build                      # Development binary
 just release                    # Optimized binary
 just bump-version               # Increment patch version in Cargo files
-just update-homebrew-formula    # Sync formula after publishing the tag
 just check                      # Check compilation
 just fmt                        # Format sources
 just ci                         # Formatting, Clippy, tests, and config validation

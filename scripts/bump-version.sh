@@ -57,4 +57,4 @@ OLD_VERSION=$current NEW_VERSION=$next perl -0pi -e '
 ' "$lockfile"
 
 printf 'Bumped middles from %s to %s.\n' "$current" "$next"
-printf 'After publishing tag v%s, run: scripts/update-homebrew-formula.sh %s\n' "$next" "$next"
+printf 'After publishing tag v%s, update rezen/homebrew-tap with scripts/update-homebrew-formula.sh %s.\n' "$next" "$next"
