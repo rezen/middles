@@ -38,6 +38,11 @@ brew install --force-bottle hello
 brew upgrade --force-bottle hello
 ```
 
+`middles configure --config middles.toml` appends these two exports to the shell
+profile selected by `$SHELL` (or `--profile`) when neither the profile nor the
+current environment already sets them; a different existing value is reported
+and left alone.
+
 If your public URL includes a reverse-proxy prefix, append `/homebrew` to that URL,
 for example `https://example.com/middles/homebrew`. The reverse proxy must strip
 `/middles`, as for the existing adapters. Signed payloads and OCI indexes are never

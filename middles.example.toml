@@ -1,6 +1,6 @@
-listen = "127.0.0.1:8080"
+listen = "127.0.0.1:6280"
 # The client-visible base URL. Set this to your HTTPS URL behind a reverse proxy.
-public_url = "http://127.0.0.1:8080"
+public_url = "http://127.0.0.1:6280"
 
 [policy]
 min_age_days = 7

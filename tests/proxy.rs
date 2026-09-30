@@ -268,7 +268,7 @@ async fn composer_first_seen_survives_restart_and_dist_has_no_source_bypass() {
     let (_, index) = request(&f.router, "/composer/packages.json", "application/json").await;
     assert_eq!(
         index["metadata-url"],
-        "http://127.0.0.1:8080/composer/p2/%package%.json"
+        "http://127.0.0.1:6280/composer/p2/%package%.json"
     );
     let (_, doc) = request(
         &f.router,

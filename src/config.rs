@@ -125,8 +125,8 @@ pub struct Upstream {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            listen: "127.0.0.1:8080".parse().unwrap(),
-            public_url: "http://127.0.0.1:8080".into(),
+            listen: "127.0.0.1:6280".parse().unwrap(),
+            public_url: "http://127.0.0.1:6280".into(),
             cache: CacheConfig::default(),
             policy: Policy::default(),
             npm: Override::default(),

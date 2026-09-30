@@ -3,7 +3,7 @@ services:
     build: .
     image: middles:local
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:6280:6280"
     environment:
       RUST_LOG: "${RUST_LOG:-middles=info,tower_http=info}"
     volumes:

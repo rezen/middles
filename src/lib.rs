@@ -4,6 +4,7 @@ pub mod error;
 pub mod inspection;
 pub mod policy;
 pub mod registry;
+pub mod setup;
 mod stats;
 
 use axum::{

@@ -1,6 +1,6 @@
-listen = "0.0.0.0:8080"
+listen = "0.0.0.0:6280"
 # Set to the address clients use, including the published port or ingress prefix.
-public_url = "http://127.0.0.1:8080"
+public_url = "http://127.0.0.1:6280"
 
 [cache]
 # Persist this entire directory, including SQLite WAL files and Composer history.

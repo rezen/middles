@@ -16,9 +16,9 @@ RUN apt-get update \
 COPY --from=build /build/target/release/middles /usr/local/bin/middles
 COPY middles.docker.toml /etc/middles/middles.toml
 USER 10001:10001
-EXPOSE 8080
+EXPOSE 6280
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["curl", "--fail", "--silent", "--show-error", "--max-time", "2", "http://127.0.0.1:8080/healthz"]
+    CMD ["curl", "--fail", "--silent", "--show-error", "--max-time", "2", "http://127.0.0.1:6280/healthz"]
 ENTRYPOINT ["/usr/local/bin/middles"]
 CMD ["--config", "/etc/middles/middles.toml"]

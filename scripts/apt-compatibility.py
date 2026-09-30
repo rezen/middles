@@ -117,7 +117,7 @@ def probe(image, fallback=False, deny=False, proxy=False, upgrade=False, proxy_i
             config = root / "middles.toml"
             upstream_host = "host.docker.internal" if proxy_image else "127.0.0.1"
             cache_path = "/var/lib/middles/cache.sqlite3" if proxy_image else str(root / "cache.sqlite3")
-            listen_port = 8080 if proxy_image else middle_port
+            listen_port = 6280 if proxy_image else middle_port
             config.write_text(f'''listen = "0.0.0.0:{listen_port}"
 public_url = "http://host.docker.internal:{middle_port}"
 [policy]

@@ -35,6 +35,8 @@ index cache to the Release digest, and verifies the selected index against the
 Release SHA256 list. If a pool file changes without an aligned index, apt rejects
 its archive hash and needs another update.
 middles does not verify signatures or act as a mirror.
+`middles configure` generates the matching deb822 stanzas and the client steps
+listed under [Client setup](#client-setup).
 
 The age clock starts when middles first observes each `.deb` checksum in a
 configured `Packages` index. A fresh deployment blocks packages for the full
@@ -75,3 +77,47 @@ and mounted SQLite state. An existing custom image can be tested with
 `python3 scripts/apt-compatibility.py --proxy-image <image:tag>`.
 To test a custom apt client image, pass `--client-image <image:tag>` (repeatable);
 the image must be `linux/amd64` and have `sh`, `apt-get`, and `dpkg` installed.
+
+## Client setup
+
+`middles configure --config middles.toml` generates one deb822 stanza per
+configured repository. Run as root on a Debian or Ubuntu client, it writes them
+to `/etc/apt/sources.list.d/middles.sources`; anywhere else it prints them
+together with the steps below. For the example configuration above:
+
+```text
+Types: deb
+URIs: https://middles.example.com/apt/debian
+Suites: bookworm bookworm-updates
+Components: main
+Architectures: amd64
+
+Types: deb
+URIs: https://middles.example.com/apt/debian-security
+Suites: bookworm-security
+Components: main
+Architectures: amd64
+```
+
+1. Save the stanzas as `/etc/apt/sources.list.d/middles.sources` on each client,
+   for example with `sudo tee`, or run
+   `sudo middles configure --config middles.toml --only apt` there. Pass `--url`
+   when `public_url` is not reachable from the client; a loopback address only
+   works on the proxy host itself.
+2. Disable the direct entries for the same upstreams, with either scheme:
+   comment out their `deb` lines in `/etc/apt/sources.list` and
+   `/etc/apt/sources.list.d/*.list`, and add `Enabled: no` to their stanzas in
+   `/etc/apt/sources.list.d/*.sources` (Debian 12 and Ubuntu 24.04 keep them in
+   `debian.sources` or `ubuntu.sources`). Entries left enabled fetch upstream
+   directly and bypass the policy.
+3. Keep each repository's signing key installed. The distribution keyrings in
+   `/etc/apt/trusted.gpg.d` verify the proxied indexes because middles passes
+   them through unchanged. If the original stanza carried a `Signed-By` line,
+   add the same line to the middles stanza.
+4. Run `sudo apt-get update`. Every index now comes from
+   `<public_url>/apt/<name>`; confirm with `apt-cache policy` or
+   `apt-get install --print-uris <package>`. Do not set
+   `Acquire::http::Proxy`: middles is a repository endpoint, not an HTTP proxy.
+5. Packages become installable `min_age_days` after middles first sees them in
+   an index, so run the update early to start the clock. A denied download shows
+   HTTP 403; `GET /apt/<repo>/check/<repository-relative-filename>` explains it.

@@ -1,16 +1,47 @@
-use clap::Parser;
-use middles::{App, config::Config};
+use clap::{Parser, Subcommand};
+use middles::{
+    App,
+    config::Config,
+    setup::{self, Client},
+};
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
     /// TOML configuration (omitting this uses safe local defaults)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     config: Option<PathBuf>,
     /// Validate configuration and exit
     #[arg(long)]
     check: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Point local package managers (npm, pip, uv, Composer, Bundler, Homebrew, APT) at this proxy
+    Configure(Configure),
+}
+
+#[derive(clap::Args)]
+struct Configure {
+    /// Proxy base URL for clients (default: public_url from the configuration)
+    #[arg(long)]
+    url: Option<String>,
+    /// Configure only these clients, comma-separated [possible: npm, pip, uv, composer, bundler, homebrew, apt]
+    #[arg(long, value_delimiter = ',', value_parser = Client::parse)]
+    only: Vec<Client>,
+    /// Leave these clients alone, comma-separated
+    #[arg(long, value_delimiter = ',', value_parser = Client::parse)]
+    skip: Vec<Client>,
+    /// Shell profile that receives environment variables (default: derived from $SHELL)
+    #[arg(long)]
+    profile: Option<PathBuf>,
+    /// Show the planned changes without writing anything
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[tokio::main]
@@ -27,6 +58,9 @@ async fn main() -> anyhow::Result<()> {
         None => Config::default(),
     };
     config.validate()?;
+    if let Some(Command::Configure(options)) = args.command {
+        return configure(&config, options);
+    }
     if args.check {
         println!("Configuration valid");
         return Ok(());
@@ -39,6 +73,23 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     Ok(())
 }
+
+fn configure(config: &Config, options: Configure) -> anyhow::Result<()> {
+    let env = setup::Environment::detect(options.profile)?;
+    let url = setup::base_url(options.url.as_deref().unwrap_or(&config.public_url))?;
+    let mut changes = setup::plan(config, &url, &options.only, &options.skip, &env)?;
+    if !options.dry_run {
+        setup::apply(&mut changes)?;
+    }
+    setup::report(
+        &mut std::io::stdout().lock(),
+        &changes,
+        &env,
+        options.dry_run,
+    )?;
+    Ok(())
+}
+
 async fn shutdown() {
     #[cfg(unix)]
     {

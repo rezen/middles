@@ -91,8 +91,8 @@ def main():
             directory = Path(temp).resolve()
             config = directory / "middles.toml"
             config.write_text(
-                'listen = "0.0.0.0:8080"\n'
-                'public_url = "http://127.0.0.1:8080"\n'
+                'listen = "0.0.0.0:6280"\n'
+                'public_url = "http://127.0.0.1:6280"\n'
                 '[cache]\npath = "/var/lib/middles/cache.sqlite3"\n'
                 '[upstream]\nallow_http = true\n'
                 f'packagist = "http://host.docker.internal:{server.server_port}"\n'
@@ -118,7 +118,7 @@ def main():
                     "--read-only", "--cap-drop", "ALL",
                     "--security-opt", "no-new-privileges:true",
                     "--add-host", "host.docker.internal:host-gateway",
-                    "--publish", "127.0.0.1::8080",
+                    "--publish", "127.0.0.1::6280",
                     "--health-interval", "1s", "--health-start-period", "1s",
                     "--mount", f"type=volume,src={volume},dst=/var/lib/middles",
                     "--mount", f"type=bind,src={config},dst=/etc/middles/middles.toml,readonly",
@@ -126,7 +126,7 @@ def main():
                 )
                 wait_healthy(container)
                 assert docker("exec", container, "id", "-u").stdout.strip() == "10001"
-                port = inspect(container)["NetworkSettings"]["Ports"]["8080/tcp"][0]["HostPort"]
+                port = inspect(container)["NetworkSettings"]["Ports"]["6280/tcp"][0]["HostPort"]
                 base = f"http://127.0.0.1:{port}"
                 with opener.open(f"{base}/healthz", timeout=5) as response:
                     assert json.load(response) == {"status": "ok"}

@@ -19,7 +19,7 @@ cp middles.example.toml middles.toml
 ./target/release/middles --config middles.toml
 ```
 
-Without `--config`, it listens on `127.0.0.1:8080`, requires seven days of age, disables download thresholds, and uses `data/cache.sqlite3`. `GET /healthz` reports process health, and `GET /ui` serves a built-in statistics dashboard. Set `RUST_LOG=middles=debug,tower_http=debug` for request logging. SIGINT and SIGTERM initiate graceful shutdown.
+Without `--config`, it listens on `127.0.0.1:6280`, requires seven days of age, disables download thresholds, and uses `data/cache.sqlite3`. `GET /healthz` reports process health, and `GET /ui` serves a built-in statistics dashboard. Set `RUST_LOG=middles=debug,tower_http=debug` for request logging. SIGINT and SIGTERM initiate graceful shutdown.
 
 Set `public_url` to the address clients can reach. All rewritten archive URLs use this configured value, never the request's Host header. A reverse proxy may mount the service under a prefix if it strips that prefix before forwarding. Restart to apply configuration changes; cached raw metadata is evaluated using the new policy immediately.
 
@@ -29,13 +29,13 @@ Build and start with Docker Compose v2:
 
 ```sh
 docker compose up --build --detach --wait
-curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:6280/healthz
 docker compose logs --follow
 docker compose down
 ```
 
-The container listens on `0.0.0.0:8080`; Compose publishes it only on the host's
-`127.0.0.1:8080`. It runs as UID/GID `10001:10001` with a read-only root filesystem.
+The container listens on `0.0.0.0:6280`; Compose publishes it only on the host's
+`127.0.0.1:6280`. It runs as UID/GID `10001:10001` with a read-only root filesystem.
 The named `middles-data` volume stores SQLite and its WAL files at `/var/lib/middles`.
 `docker compose down` preserves that volume. **Do not use `down --volumes` unless
 you intend to delete cached data and restart Composer's first-observation waiting periods.**
@@ -49,9 +49,9 @@ cp middles.docker.toml middles.local.toml
 MIDDLES_CONFIG=./middles.local.toml docker compose up --detach --force-recreate --wait
 ```
 
-Keep `listen = "0.0.0.0:8080"` and `cache.path = "/var/lib/middles/cache.sqlite3"`
+Keep `listen = "0.0.0.0:6280"` and `cache.path = "/var/lib/middles/cache.sqlite3"`
 when using this setup. Set `public_url` to the address clients actually use:
-`http://127.0.0.1:8080` for host clients, a reachable service hostname for clients
+`http://127.0.0.1:6280` for host clients, a reachable service hostname for clients
 in another container, or your external HTTPS URL behind ingress. Other containers'
 loopback addresses refer to themselves. If you change the published host port,
 update `public_url` too. For shared access, configure authenticated HTTPS ingress
@@ -71,7 +71,7 @@ Plain Docker works too:
 docker build --tag middles:local .
 docker volume create middles-data
 docker run --detach --name middles \
-  --publish 127.0.0.1:8080:8080 \
+  --publish 127.0.0.1:6280:6280 \
   --mount type=volume,src=middles-data,dst=/var/lib/middles \
   --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   middles:local
@@ -81,7 +81,7 @@ To override configuration with plain Docker, add
 `--mount type=bind,src="$PWD/middles.local.toml",dst=/etc/middles/middles.toml,readonly`
 before the image name. Passing CLI arguments replaces the image's default
 arguments, so include `--config /etc/middles/middles.toml` when adding `--check`.
-The image health check probes `/healthz` on port 8080; override it if you change
+The image health check probes `/healthz` on port 6280; override it if you change
 the internal listening address. This endpoint reports process health, not upstream
 registry availability.
 
@@ -107,16 +107,38 @@ dependencies; the smoke checks do not contact public package registries.
 
 ## Client setup
 
+### Configure clients automatically
+
+`middles configure` edits each supported client's user-level configuration so it resolves through the proxy. It reads `public_url` and the Homebrew and APT `enabled` flags from the same `--config` file the server uses; without one it targets `http://127.0.0.1:6280`. Run it with `--dry-run` first: it prints every planned edit, including the full contents of files it would create.
+
+```sh
+middles configure --config middles.toml --dry-run
+middles configure --config middles.toml
+middles configure --url https://middles.example.com --only npm,pip,uv --profile ~/.zprofile
+```
+
+| Client | File | Change |
+| --- | --- | --- |
+| npm | `~/.npmrc` (`NPM_CONFIG_USERCONFIG`) | `registry`, `audit=false` |
+| pip | `pip.conf` in pip's user configuration directory (`PIP_CONFIG_FILE`) | `[global] index-url` |
+| uv | `~/.config/uv/uv.toml` (`UV_CONFIG_FILE`) | a default `[[index]]` |
+| Composer | `config.json` in Composer's home (`COMPOSER_HOME`) | `middles` repository first, `packagist.org` disabled, `secure-http` off for plain HTTP |
+| Bundler | `~/.bundle/config` (`BUNDLE_USER_CONFIG`) | mirror for `https://rubygems.org`, so Gemfiles and lockfiles keep the upstream source |
+| Homebrew | shell profile chosen from `$SHELL`, or `--profile` | `HOMEBREW_ARTIFACT_DOMAIN` and `HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1` exports |
+| APT | `/etc/apt/sources.list.d/middles.sources` | one deb822 stanza per `[[apt.repos]]` |
+
+Existing files are edited in place: the first live assignment of each key is replaced, and comments, other keys and other sections stay as they are. A value that already matches leaves the file untouched, so a second run reports every client as unchanged. Shell profiles only ever receive appended lines: a Homebrew variable that the profile or the current environment already sets to the target value is left alone, and one set to a different value skips the Homebrew step with a message instead of being rewritten. Variables that would override an edited file, such as `NPM_CONFIG_REGISTRY`, `PIP_INDEX_URL` or `UV_DEFAULT_INDEX`, are reported. Homebrew and APT follow their `enabled` flags unless named in `--only`, and `--skip` excludes clients. APT sources are written only when that directory exists and is writable; otherwise the stanzas are printed together with numbered client steps (save the file, disable the direct entries, keep the signing keys, run `apt-get update`), which the [APT guide](docs/apt/README.md#client-setup) also lists. A `uv.toml` that already declares another default index is rewritten without its comments. The command does not touch project files, scoped npm registries, extra indexes, existing lockfiles or client caches, which remain outside the proxy as described under Deployment boundary. The Bundler mirror was checked with the inert local fixture on Bundler 1.17.2; the direct-source setup below remains the configuration verified on 2.4.22.
+
 ### npm
 
 ```sh
-npm install --registry=http://127.0.0.1:8080/npm/ --no-audit
+npm install --registry=http://127.0.0.1:6280/npm/ --no-audit
 ```
 
 Or add to the project's `.npmrc`:
 
 ```ini
-registry=http://127.0.0.1:8080/npm/
+registry=http://127.0.0.1:6280/npm/
 audit=false
 ```
 
@@ -125,15 +147,15 @@ Scoped packages, exact versions, distribution tags, and conventional npm tarball
 ### pip
 
 ```sh
-python -m pip install --index-url http://127.0.0.1:8080/pip/simple/ requests
+python -m pip install --index-url http://127.0.0.1:6280/pip/simple/ requests
 ```
 
-Or set `PIP_INDEX_URL=http://127.0.0.1:8080/pip/simple/`. Use this as the sole index; an extra index is another resolution source. Modern JSON Simple API and HTML clients are supported, including hashes, `requires-python`, yanked flags, and PEP 658 core metadata. Policy applies to each individual uploaded file, including new wheels added to an older release. Files without upload times are hidden.
+Or set `PIP_INDEX_URL=http://127.0.0.1:6280/pip/simple/`. Use this as the sole index; an extra index is another resolution source. Modern JSON Simple API and HTML clients are supported, including hashes, `requires-python`, yanked flags, and PEP 658 core metadata. Policy applies to each individual uploaded file, including new wheels added to an older release. Files without upload times are hidden.
 
 uv works against the same Simple API. For the pip-compatible interface:
 
 ```sh
-uv pip install --index-url http://127.0.0.1:8080/pip/simple/ requests
+uv pip install --index-url http://127.0.0.1:6280/pip/simple/ requests
 ```
 
 For project workflows (`uv add`, `uv lock`, `uv sync`), make the proxy the default index in `pyproject.toml`:
@@ -141,11 +163,11 @@ For project workflows (`uv add`, `uv lock`, `uv sync`), make the proxy the defau
 ```toml
 [[tool.uv.index]]
 name = "middles"
-url = "http://127.0.0.1:8080/pip/simple/"
+url = "http://127.0.0.1:6280/pip/simple/"
 default = true
 ```
 
-Keep `default = true` so the proxy replaces PyPI rather than becoming one more resolution source, and avoid extra `[[tool.uv.index]]` entries that resolve upstream directly. `UV_DEFAULT_INDEX=http://127.0.0.1:8080/pip/simple/` sets the same default for all uv commands (`UV_INDEX_URL` is its deprecated spelling). The per-file policy above applies unchanged; note that uv's local cache serves previously downloaded files without contacting the proxy, and existing `uv.lock` files pin the index URLs recorded at lock time, so regenerate lockfiles through the proxy.
+Keep `default = true` so the proxy replaces PyPI rather than becoming one more resolution source, and avoid extra `[[tool.uv.index]]` entries that resolve upstream directly. `UV_DEFAULT_INDEX=http://127.0.0.1:6280/pip/simple/` sets the same default for all uv commands (`UV_INDEX_URL` is its deprecated spelling). The per-file policy above applies unchanged; note that uv's local cache serves previously downloaded files without contacting the proxy, and existing `uv.lock` files pin the index URLs recorded at lock time, so regenerate lockfiles through the proxy.
 
 ### Composer 2
 
@@ -154,7 +176,7 @@ Merge this into `composer.json`:
 ```json
 {
   "repositories": [
-    {"type": "composer", "url": "http://127.0.0.1:8080/composer/"},
+    {"type": "composer", "url": "http://127.0.0.1:6280/composer/"},
     {"packagist.org": false}
   ],
   "config": {"secure-http": false, "preferred-install": "dist"}
@@ -170,11 +192,11 @@ Merge this into `composer.json`:
 Use the proxy as the Gemfile's source:
 
 ```ruby
-source "http://127.0.0.1:8080/rubygems/"
+source "http://127.0.0.1:6280/rubygems/"
 gem "rake"
 ```
 
-Then run `bundle install`. Use HTTPS for shared deployments. Replace other RubyGems sources and regenerate affected lockfiles through the proxy; existing installations, cached gems, and direct Git/path sources can bypass it.
+Then run `bundle install`. Alternatively, `middles configure` sets a Bundler mirror for `https://rubygems.org` in `~/.bundle/config`, so Gemfiles keep their upstream source. Use HTTPS for shared deployments. Replace other RubyGems sources and regenerate affected lockfiles through the proxy; existing installations, cached gems, and direct Git/path sources can bypass it.
 
 The adapter implements Bundler's dependency API plus conventional gemspec and `.gem` downloads. `/versions` intentionally returns 404 so Bundler uses the dependency API; no partial global compact index is published. Upstream compact `/info` metadata is fetched only for requested gems. Publication `created_at` is evaluated separately for each version/platform, and missing or invalid times fail closed. Blocked gemspecs and direct archive requests are denied again, including requests from lockfiles. Ruby and RubyGems requirements are read by Bundler from the eligible gemspec; the dependency API does not carry compact-index artifact checksums to the client.
 
@@ -206,7 +228,7 @@ install_hooks = "report"
 For the tested Homebrew 7.0.6 client, with portable Ruby already provisioned:
 
 ```sh
-export HOMEBREW_ARTIFACT_DOMAIN=http://127.0.0.1:8080/homebrew
+export HOMEBREW_ARTIFACT_DOMAIN=http://127.0.0.1:6280/homebrew
 export HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1
 brew install --force-bottle hello
 ```
@@ -218,7 +240,7 @@ annotation, so already-old bottles can pass immediately. Build time is not a
 guaranteed publication time; with a positive age requirement, missing, malformed
 and future dates are denied. Set `[homebrew] min_age_days = 0` to disable Homebrew
 age checks entirely; verified bottle evidence is still required.
-Run `python3 scripts/homebrew-warm.py http://127.0.0.1:8080 zstd` to observe a
+Run `python3 scripts/homebrew-warm.py http://127.0.0.1:6280 zstd` to observe a
 formula's dependency closure without transferring bottles; retain the SQLite
 ledger across restarts. Signed Homebrew API metadata stays upstream and unchanged.
 
@@ -270,9 +292,9 @@ totals, per-ecosystem counts, and a paginated list of releases ordered by their
 most recent transfer:
 
 ```sh
-curl 'http://127.0.0.1:8080/stats'
-curl 'http://127.0.0.1:8080/stats?ecosystem=npm&package=esbuild'
-curl 'http://127.0.0.1:8080/stats?limit=50&offset=50'
+curl 'http://127.0.0.1:6280/stats'
+curl 'http://127.0.0.1:6280/stats?ecosystem=npm&package=esbuild'
+curl 'http://127.0.0.1:6280/stats?limit=50&offset=50'
 ```
 
 `GET /ui` renders the same report as a dashboard: totals, per-ecosystem
@@ -315,10 +337,10 @@ independent of the upstream monthly popularity counts used by policy.
 Use the read-only inspection endpoint to see script definitions and execution signals available in cached registry metadata. It does not download archives or execute package code. An exact version is required for npm/Composer; Python inspection selects an exact filename because wheels and source distributions have different behavior:
 
 ```sh
-curl 'http://127.0.0.1:8080/inspect/npm/esbuild?version=0.25.0'
-curl 'http://127.0.0.1:8080/inspect/npm/@scope/package?version=1.0.0'
-curl 'http://127.0.0.1:8080/inspect/composer/vendor/package?version=1.0.0'
-curl 'http://127.0.0.1:8080/inspect/pip/six?filename=six-1.17.0.tar.gz'
+curl 'http://127.0.0.1:6280/inspect/npm/esbuild?version=0.25.0'
+curl 'http://127.0.0.1:6280/inspect/npm/@scope/package?version=1.0.0'
+curl 'http://127.0.0.1:6280/inspect/composer/vendor/package?version=1.0.0'
+curl 'http://127.0.0.1:6280/inspect/pip/six?filename=six-1.17.0.tar.gz'
 ```
 
 Reports include the original `scripts` object when available, hook findings with execution context, `dependency_execution`, and explicit inspection limitations. Custom script definitions are retained so references such as `npm run build` or Composer's `@build` can be reviewed. No commands are resolved or executed. `status: not_reported` is not a safety verdict; `scripts: null` means definitions were not supplied by this metadata. Inspection remains available for blocked packages, evaluates only the hook policy, and confers no artifact access (`other_policies_evaluated: false`).

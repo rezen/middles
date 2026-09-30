@@ -31,7 +31,7 @@ Build an isolated protocol fixture and record the Homebrew version, platform, re
 The proposed client setup is:
 
 ```sh
-export HOMEBREW_ARTIFACT_DOMAIN=http://127.0.0.1:8080/homebrew
+export HOMEBREW_ARTIFACT_DOMAIN=http://127.0.0.1:6280/homebrew
 export HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1
 ```
 
