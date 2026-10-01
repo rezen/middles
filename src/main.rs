@@ -22,7 +22,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Point local package managers (npm, pip, uv, Composer, Bundler, Homebrew, APT) at this proxy
+    /// Point local package managers (npm, pnpm, Yarn, Bun, pip, uv, Composer, Bundler, Homebrew, APT) at this proxy
     Configure(Configure),
     /// Import OSV dump archives into the local advisory mirror
     OsvSync(OsvSync),
@@ -46,7 +46,7 @@ struct Configure {
     /// Proxy base URL for clients (default: public_url from the configuration)
     #[arg(long)]
     url: Option<String>,
-    /// Configure only these clients, comma-separated [possible: npm, pip, uv, composer, bundler, homebrew, apt]
+    /// Configure only these clients, comma-separated [possible: npm (also pnpm, yarn1), yarn, bun, pip, uv, composer, bundler, homebrew, apt]
     #[arg(long, value_delimiter = ',', value_parser = Client::parse)]
     only: Vec<Client>,
     /// Leave these clients alone, comma-separated

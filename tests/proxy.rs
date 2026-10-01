@@ -220,6 +220,11 @@ async fn npm_filters_resolves_tags_and_gates_locked_artifacts() {
             .1["version"],
         "1.0.0"
     );
+    // Yarn 1 and pnpm encode the scope separator in lowercase; same package, cached.
+    assert_eq!(
+        request(&f.router, "/npm/@scope%2fdemo", "*/*").await.1["dist-tags"]["latest"],
+        "1.0.0"
+    );
     // Only one metadata fetch for demo; archives add two requests, scoped metadata adds one.
     assert_eq!(f.hits.load(Ordering::SeqCst), 4);
 }

@@ -51,7 +51,7 @@ config-check config="middles.example.toml":
 # Run formatting, lint, tests, and example configuration validation.
 ci: fmt-check lint test config-check
 
-# Opt-in live registry/client checks; requires Python, npm, pip, and Composer.
+# Opt-in live registry/client checks; requires Python, npm, pip, and Composer. Also runs Yarn, pnpm, and Bun when found.
 smoke: build
     python3 scripts/smoke.py
 

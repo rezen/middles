@@ -77,6 +77,8 @@ fn fresh_home_gets_every_client_file_once() {
     let changes = run(&homebrew_config(), URL, &[], &env);
     for client in [
         Client::Npm,
+        Client::Yarn,
+        Client::Bun,
         Client::Pip,
         Client::Uv,
         Client::Composer,
@@ -93,6 +95,14 @@ fn fresh_home_gets_every_client_file_once() {
     assert_eq!(
         read(&home.join(".npmrc")),
         "registry=http://127.0.0.1:6280/npm/\naudit=false\n"
+    );
+    assert_eq!(
+        read(&home.join(".yarnrc.yml")),
+        "npmRegistryServer: \"http://127.0.0.1:6280/npm\"\nunsafeHttpWhitelist:\n  - \"127.0.0.1\"\n"
+    );
+    assert_eq!(
+        read(&home.join(".bunfig.toml")),
+        "[install]\nregistry = \"http://127.0.0.1:6280/npm/\"\n"
     );
     assert_eq!(
         read(&home.join(".config/pip/pip.conf")),
@@ -579,6 +589,15 @@ fn paths_follow_environment_overrides() {
         home.join("bh").display().to_string(),
     );
     assert_eq!(path_of(&env, Client::Bundler), home.join("bh/config"));
+    env.vars
+        .insert("YARN_RC_FILENAME".into(), ".yarnrc-custom.yml".into());
+    assert_eq!(path_of(&env, Client::Yarn), home.join(".yarnrc-custom.yml"));
+    // Bun prefers ~/.bunfig.toml and falls back to an existing XDG file.
+    assert_eq!(path_of(&env, Client::Bun), home.join(".bunfig.toml"));
+    write(&xdg.join(".bunfig.toml"), "");
+    assert_eq!(path_of(&env, Client::Bun), xdg.join(".bunfig.toml"));
+    write(&home.join(".bunfig.toml"), "");
+    assert_eq!(path_of(&env, Client::Bun), home.join(".bunfig.toml"));
 
     // macOS pip prefers Application Support only when that directory exists.
     let env = environment(home, Os::Macos);
@@ -607,6 +626,12 @@ fn conflicting_environment_variables_are_reported() {
     );
     env.vars
         .insert("UV_INDEX".into(), "https://extra.example/simple".into());
+    env.vars.insert(
+        "YARN_NPM_REGISTRY_SERVER".into(),
+        "https://other.example".into(),
+    );
+    env.vars
+        .insert("YARN_REGISTRY".into(), "http://127.0.0.1:6280/npm/".into());
     let changes = setup::plan(&Config::default(), URL, &[], &[], &env).unwrap();
     let note = |client: Client| find(&changes, client).notes.join("\n");
     assert!(note(Client::Npm).contains(
@@ -617,6 +642,16 @@ fn conflicting_environment_variables_are_reported() {
         "matching values are fine"
     );
     assert!(note(Client::Uv).contains("UV_INDEX=https://extra.example/simple is set"));
+    assert!(note(Client::Yarn).contains(
+        "YARN_NPM_REGISTRY_SERVER=https://other.example is set in this environment and overrides ~/.yarnrc.yml"
+    ));
+    assert!(
+        !note(Client::Yarn).contains("YARN_REGISTRY"),
+        "matching values are fine"
+    );
+    assert!(note(Client::Bun).contains(
+        "NPM_CONFIG_REGISTRY=https://other.example/ is set in this environment and overrides ~/.bunfig.toml"
+    ));
 }
 
 #[test]
@@ -641,6 +676,10 @@ fn base_url_is_normalized_and_validated() {
 fn client_names_and_aliases_parse() {
     assert_eq!(Client::parse("rubygems").unwrap(), Client::Bundler);
     assert_eq!(Client::parse(" BREW ").unwrap(), Client::Homebrew);
+    assert_eq!(Client::parse("pnpm").unwrap(), Client::Npm);
+    assert_eq!(Client::parse("yarn1").unwrap(), Client::Npm);
+    assert_eq!(Client::parse("berry").unwrap(), Client::Yarn);
+    assert_eq!(Client::parse("Bun").unwrap(), Client::Bun);
     for client in Client::ALL {
         assert_eq!(Client::parse(client.as_str()).unwrap(), client);
     }
@@ -663,8 +702,119 @@ fn report_covers_every_client() {
     }
     assert!(text.contains("npm       would create ~/.npmrc\n"));
     assert!(text.contains("          | registry=http://127.0.0.1:6280/npm/\n"));
+    assert!(text.contains("yarn      would create ~/.yarnrc.yml\n"));
+    assert!(text.contains("          | npmRegistryServer: \"http://127.0.0.1:6280/npm\"\n"));
+    assert!(text.contains("bun       would create ~/.bunfig.toml\n"));
     assert!(text.contains("apt       manual: this host has no /etc/apt/sources.list.d"));
     assert!(text.contains("          | URIs: http://127.0.0.1:6280/apt/debian\n"));
     assert!(text.contains("          1. Save the stanzas above as"));
     assert!(text.contains("          2. Disable the direct entries for deb.debian.org/debian"));
+}
+
+#[test]
+fn yarn_rc_is_edited_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let env = environment(home, Os::Linux);
+    let rc = home.join(".yarnrc.yml");
+
+    // Flow-style whitelist without the host, another registry, scopes, comments.
+    write(
+        &rc,
+        "# yarn\nnodeLinker: node-modules\nnpmRegistryServer: 'https://registry.yarnpkg.com'\nunsafeHttpWhitelist: [\"localhost\"] # dev\nnpmScopes:\n  corp:\n    npmRegistryServer: \"https://npm.corp\"\n",
+    );
+    let changes = run(&Config::default(), URL, &[Client::Yarn], &env);
+    let yarn = find(&changes, Client::Yarn);
+    assert_eq!(yarn.outcome, Outcome::Update);
+    assert_eq!(
+        read(&rc),
+        "# yarn\nnodeLinker: node-modules\nnpmRegistryServer: \"http://127.0.0.1:6280/npm\"\nunsafeHttpWhitelist: [\"localhost\", \"127.0.0.1\"] # dev\nnpmScopes:\n  corp:\n    npmRegistryServer: \"https://npm.corp\"\n"
+    );
+    assert!(
+        yarn.notes
+            .iter()
+            .any(|n| n == "replaced npmRegistryServer (was https://registry.yarnpkg.com)")
+    );
+    assert!(yarn.notes.iter().any(|n| n.contains("npmScopes")));
+    assert!(
+        yarn.notes
+            .iter()
+            .any(|n| n.contains("unsafeHttpWhitelist now allows plain HTTP to 127.0.0.1"))
+    );
+
+    // Block-style whitelist that already lists the host, trailing-slash registry: nothing to do.
+    write(
+        &rc,
+        "npmRegistryServer: \"http://127.0.0.1:6280/npm/\"\nunsafeHttpWhitelist:\n  - localhost\n  - 127.0.0.1\nenableTelemetry: false\n",
+    );
+    let before = read(&rc);
+    let changes = run(&Config::default(), URL, &[Client::Yarn], &env);
+    assert_eq!(find(&changes, Client::Yarn).outcome, Outcome::Unchanged);
+    assert_eq!(read(&rc), before);
+
+    // Block-style whitelist missing the host: appended after the last item with its indentation.
+    write(
+        &rc,
+        "unsafeHttpWhitelist:\n    - localhost\n\nenableTelemetry: false\n",
+    );
+    run(&Config::default(), URL, &[Client::Yarn], &env);
+    assert_eq!(
+        read(&rc),
+        "unsafeHttpWhitelist:\n    - localhost\n    - \"127.0.0.1\"\n\nenableTelemetry: false\nnpmRegistryServer: \"http://127.0.0.1:6280/npm\"\n"
+    );
+
+    // An HTTPS proxy needs no whitelist.
+    fs::remove_file(&rc).unwrap();
+    let changes = run(
+        &Config::default(),
+        "https://proxy.example.com",
+        &[Client::Yarn],
+        &env,
+    );
+    assert_eq!(find(&changes, Client::Yarn).outcome, Outcome::Create);
+    assert_eq!(
+        read(&rc),
+        "npmRegistryServer: \"https://proxy.example.com/npm\"\n"
+    );
+}
+
+#[test]
+fn bunfig_install_registry_is_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    let env = environment(home, Os::Macos);
+    let bunfig = home.join(".bunfig.toml");
+    write(
+        &bunfig,
+        "# bun\n[install]\n# dev deps\ndev = true\nregistry = 'https://registry.npmjs.org/'\n\n[install.scopes]\ncorp = \"https://npm.corp\"\n\n[test]\ncoverage = true\n",
+    );
+    let changes = run(&Config::default(), URL, &[Client::Bun], &env);
+    let bun = find(&changes, Client::Bun);
+    assert_eq!(bun.outcome, Outcome::Update);
+    assert_eq!(
+        read(&bunfig),
+        "# bun\n[install]\n# dev deps\ndev = true\nregistry = \"http://127.0.0.1:6280/npm/\"\n\n[install.scopes]\ncorp = \"https://npm.corp\"\n\n[test]\ncoverage = true\n"
+    );
+    assert!(
+        bun.notes
+            .iter()
+            .any(|n| n == "replaced registry (was 'https://registry.npmjs.org/')")
+    );
+    assert!(bun.notes.iter().any(|n| n.contains("[install.scopes]")));
+
+    // A file without an [install] table gets one appended.
+    write(&bunfig, "[test]\ncoverage = true\n");
+    run(&Config::default(), URL, &[Client::Bun], &env);
+    assert_eq!(
+        read(&bunfig),
+        "[test]\ncoverage = true\n\n[install]\nregistry = \"http://127.0.0.1:6280/npm/\"\n"
+    );
+    assert_eq!(
+        find(
+            &run(&Config::default(), URL, &[Client::Bun], &env),
+            Client::Bun
+        )
+        .outcome,
+        Outcome::Unchanged
+    );
 }

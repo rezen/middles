@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Opt-in live registry/client smoke test. Requires built binary, npm, pip, Composer.
+Yarn, pnpm and Bun are exercised when found on PATH or named with MIDDLES_SMOKE_YARN,
+MIDDLES_SMOKE_PNPM or MIDDLES_SMOKE_BUN (for example MIDDLES_SMOKE_YARN="corepack yarn@4.10.3").
+Yarn 2+ reads every YARN_* variable as a setting, so the overrides avoid that prefix.
 Runs clients in a disposable directory with isolated caches; executes no package scripts.
 """
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import shlex
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +25,19 @@ BINARY = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / "target/de
 def run(args, cwd, env):
     print("+ " + " ".join(map(str, args)), flush=True)
     subprocess.run(args, cwd=cwd, env=env, check=True, timeout=120)
+
+
+def tool(name):
+    """Command for an optional client: $MIDDLES_SMOKE_<NAME>, else the executable on PATH."""
+    override = os.environ.get(f"MIDDLES_SMOKE_{name.upper()}")
+    if override:
+        return shlex.split(override)
+    found = shutil.which(name)
+    return [found] if found else None
+
+
+def version_of(command, cwd, env):
+    return subprocess.run([*command, "--version"], cwd=cwd, env=env, check=True, capture_output=True, text=True, timeout=120).stdout.strip()
 
 
 with tempfile.TemporaryDirectory(prefix="middles-smoke-") as tmp:
@@ -74,6 +92,68 @@ min_age_days = 0
         lock = json.loads((npm_dir / "package-lock.json").read_text())
         assert lock["packages"]["node_modules/is-number"]["resolved"].startswith(origin + "/artifacts/npm/")
 
+        # Other npm-protocol clients: each resolves a plain and a scoped package and
+        # must record the proxy's artifact URLs in its own lockfile.
+        node_clients = []
+        scoped = "@sindresorhus/is@4.6.0"
+        package_json = '{"name":"middles-smoke","version":"1.0.0","private":true}'
+        yarn = tool("yarn")
+        if yarn:
+            version = version_of(yarn, work, env)
+            yarn_dir = work / "yarn"
+            yarn_dir.mkdir()
+            (yarn_dir / "package.json").write_text(package_json)
+            if version.startswith("1."):
+                # Yarn 1 takes `registry` from .npmrc files ahead of .yarnrc.
+                (yarn_dir / ".npmrc").write_text(f"registry={origin}/npm/\n")
+                run([*yarn, "add", "is-number@7.0.0", scoped, "--ignore-scripts", "--non-interactive", "--no-progress", f"--cache-folder={work}/yarn-cache"], yarn_dir, env)
+                assert f'resolved "{origin}/artifacts/npm/' in (yarn_dir / "yarn.lock").read_text()
+            else:
+                # Yarn 2+ caches registry metadata per hostname under globalFolder, so keep it local.
+                (yarn_dir / ".yarnrc.yml").write_text(f"""npmRegistryServer: "{origin}/npm"
+unsafeHttpWhitelist:
+  - "127.0.0.1"
+enableScripts: false
+enableGlobalCache: false
+enableImmutableInstalls: false
+enableTelemetry: false
+nodeLinker: node-modules
+cacheFolder: "{work}/yarn-cache"
+globalFolder: "{work}/yarn-global"
+""")
+                run([*yarn, "add", "is-number@7.0.0", scoped], yarn_dir, env)
+                archive = "__archiveUrl=" + urllib.parse.quote(origin + "/artifacts/npm/", safe="")
+                assert archive in (yarn_dir / "yarn.lock").read_text()
+            node_clients.append(f"Yarn {version}")
+        else:
+            print("skip: yarn is not on PATH and MIDDLES_SMOKE_YARN is unset", flush=True)
+
+        pnpm = tool("pnpm")
+        if pnpm:
+            version = version_of(pnpm, work, env)
+            pnpm_dir = work / "pnpm"
+            pnpm_dir.mkdir()
+            (pnpm_dir / "package.json").write_text(package_json)
+            (pnpm_dir / ".npmrc").write_text(f"registry={origin}/npm/\nstore-dir={work}/pnpm-store\ncache-dir={work}/pnpm-cache\nstate-dir={work}/pnpm-state\n")
+            run([*pnpm, "add", "is-number@7.0.0", scoped, "--ignore-scripts"], pnpm_dir, env)
+            assert f"tarball: {origin}/artifacts/npm/" in (pnpm_dir / "pnpm-lock.yaml").read_text()
+            node_clients.append(f"pnpm {version}")
+        else:
+            print("skip: pnpm is not on PATH and MIDDLES_SMOKE_PNPM is unset", flush=True)
+
+        bun = tool("bun")
+        if bun:
+            version = version_of(bun, work, env)
+            bun_dir = work / "bun"
+            bun_dir.mkdir()
+            (bun_dir / "package.json").write_text(package_json)
+            (bun_dir / "bunfig.toml").write_text(f'[install]\nregistry = "{origin}/npm/"\n\n[install.cache]\ndir = "{work}/bun-cache"\n')
+            run([*bun, "add", "is-number@7.0.0", scoped, "--ignore-scripts"], bun_dir, dict(env, DO_NOT_TRACK="1", BUN_INSTALL_CACHE_DIR=f"{work}/bun-cache"))
+            assert f'"{origin}/artifacts/npm/' in (bun_dir / "bun.lock").read_text()
+            node_clients.append(f"Bun {version}")
+        else:
+            print("skip: bun is not on PATH and MIDDLES_SMOKE_BUN is unset", flush=True)
+
         run([sys.executable, "-m", "pip", "--isolated", "--disable-pip-version-check", "--no-cache-dir", "download", "six==1.17.0", "--no-deps", "--index-url", origin + "/pip/simple/", "--dest", str(work / "wheels")], work, env)
         assert list((work / "wheels").glob("six-1.17.0-*.whl"))
 
@@ -103,7 +183,8 @@ min_age_days = 0
                 assert "rake" in json.dumps(json.load(response))
             print("PASS: live RubyGems download through middles", flush=True)
 
-        print("PASS: live hook inspection plus npm, pip, and Composer downloads through middles", flush=True)
+        clients = ", ".join(["npm", *node_clients, "pip", "Composer"])
+        print(f"PASS: live hook inspection plus {clients} downloads through middles", flush=True)
     finally:
         proxy.terminate()
         try:

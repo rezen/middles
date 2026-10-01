@@ -16,10 +16,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Every client tool this command can configure.
+/// Every client tool this command can configure. pnpm and Yarn 1 read npm's
+/// registry setting, so their names are aliases of [`Client::Npm`]; `Yarn`
+/// is Yarn 2+ with its own file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Client {
     Npm,
+    Yarn,
+    Bun,
     Pip,
     Uv,
     Composer,
@@ -31,8 +35,10 @@ pub enum Client {
 impl Client {
     /// Must list every variant; `plan` iterates this so no client is silently
     /// left out of the report.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Npm,
+        Self::Yarn,
+        Self::Bun,
         Self::Pip,
         Self::Uv,
         Self::Composer,
@@ -40,11 +46,14 @@ impl Client {
         Self::Homebrew,
         Self::Apt,
     ];
-    pub const NAMES: &str = "npm, pip, uv, composer, bundler, homebrew, apt";
+    pub const NAMES: &str =
+        "npm (also pnpm, yarn1), yarn, bun, pip, uv, composer, bundler, homebrew, apt";
 
     pub fn parse(value: &str) -> anyhow::Result<Self> {
         Ok(match value.trim().to_ascii_lowercase().as_str() {
-            "npm" => Self::Npm,
+            "npm" | "pnpm" | "yarn1" | "yarn-classic" => Self::Npm,
+            "yarn" | "yarn-berry" | "berry" | "yarn2" | "yarn3" | "yarn4" => Self::Yarn,
+            "bun" => Self::Bun,
             "pip" => Self::Pip,
             "uv" => Self::Uv,
             "composer" => Self::Composer,
@@ -57,6 +66,8 @@ impl Client {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Npm => "npm",
+            Self::Yarn => "yarn",
+            Self::Bun => "bun",
             Self::Pip => "pip",
             Self::Uv => "uv",
             Self::Composer => "composer",
@@ -258,6 +269,8 @@ pub fn plan(
             Some(reason) => Change::skipped(client, reason),
             None => match client {
                 Client::Npm => npm(url, env)?,
+                Client::Yarn => yarn(url, env)?,
+                Client::Bun => bun(url, env)?,
                 Client::Pip => pip(url, env)?,
                 Client::Uv => uv(url, env)?,
                 Client::Composer => composer(url, env)?,
@@ -528,13 +541,194 @@ fn npm(url: &str, env: &Environment) -> anyhow::Result<Change> {
     for name in ["NPM_CONFIG_REGISTRY", "npm_config_registry"] {
         notes.extend(override_note(env, name, Some(&registry), &path));
     }
-    Ok(Change::edited(
-        Client::Npm,
-        path,
+    let mut change = Change::edited(Client::Npm, path, existing.as_deref(), edit.text, notes);
+    if change.outcome != Outcome::Unchanged {
+        change
+            .notes
+            .push("pnpm, Yarn 1 and Bun read this registry setting too".to_owned());
+    }
+    Ok(change)
+}
+
+// ---------------------------------------------------------------------------
+// Yarn 2+ (.yarnrc.yml). Yarn 1 reads ~/.npmrc instead; see `npm`.
+
+/// The first top-level `key:` line of a YAML mapping: `(index, text after
+/// the colon)`. Quoted keys are not recognized.
+fn yaml_top_level(lines: &[String], key: &str) -> Option<(usize, String)> {
+    lines.iter().enumerate().find_map(|(i, line)| {
+        if is_comment(line) || line.starts_with(char::is_whitespace) {
+            return None;
+        }
+        let rest = line.strip_prefix(key)?.strip_prefix(':')?;
+        (rest.is_empty() || rest.starts_with(char::is_whitespace))
+            .then(|| (i, rest.trim().to_owned()))
+    })
+}
+
+/// Adds `host` to the top-level `unsafeHttpWhitelist` sequence unless it is
+/// listed, keeping the file's flow (`[a, b]`) or block (`- a`) style.
+fn yarn_whitelist(lines: &mut Vec<String>, host: &str, notes: &mut Vec<String>) {
+    let item = format!("\"{host}\"");
+    let listed = |value: &str| unquote(value) == host;
+    match yaml_top_level(lines, "unsafeHttpWhitelist") {
+        None => {
+            lines.push("unsafeHttpWhitelist:".to_owned());
+            lines.push(format!("  - {item}"));
+        }
+        Some((i, rest)) if rest.starts_with('[') => {
+            let line = &lines[i];
+            let (Some(open), Some(close)) = (line.find('['), line.rfind(']')) else {
+                notes.push(
+                    "unsafeHttpWhitelist could not be parsed; add the proxy host by hand"
+                        .to_owned(),
+                );
+                return;
+            };
+            let inner = line[open + 1..close].to_owned();
+            if inner.split(',').any(listed) {
+                return;
+            }
+            let insert = if inner.trim().is_empty() {
+                item
+            } else {
+                format!(", {item}")
+            };
+            lines[i].insert_str(close, &insert);
+        }
+        Some((i, rest)) if rest.is_empty() || rest.starts_with('#') => {
+            // Block sequence: the indented `- item` lines directly below.
+            let mut last = None;
+            let mut indent = None;
+            for (j, line) in lines.iter().enumerate().skip(i + 1) {
+                let trimmed = line.trim_start();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if !line.starts_with(char::is_whitespace) || !trimmed.starts_with('-') {
+                    break;
+                }
+                if listed(trimmed[1..].trim()) {
+                    return;
+                }
+                indent.get_or_insert_with(|| line[..line.len() - trimmed.len()].to_owned());
+                last = Some(j);
+            }
+            let at = last.map_or(i + 1, |j| j + 1);
+            let indent = indent.unwrap_or_else(|| "  ".to_owned());
+            lines.insert(at, format!("{indent}- {item}"));
+        }
+        Some((i, rest)) => {
+            // A scalar where Yarn expects a sequence; keep it as the first item.
+            if listed(&rest) {
+                return;
+            }
+            let old = unquote(&rest);
+            lines[i] = if old.is_empty() {
+                format!("unsafeHttpWhitelist: [{item}]")
+            } else {
+                format!("unsafeHttpWhitelist: [\"{old}\", {item}]")
+            };
+        }
+    }
+    notes.push(format!(
+        "unsafeHttpWhitelist now allows plain HTTP to {host}; use HTTPS for shared deployments"
+    ));
+}
+
+fn yarn(url: &str, env: &Environment) -> anyhow::Result<Change> {
+    let path = env
+        .home
+        .join(env.var("YARN_RC_FILENAME").unwrap_or(".yarnrc.yml"));
+    let existing = read(&path)?;
+    let registry = format!("{url}/npm");
+    let mut lines: Vec<String> = existing
+        .as_deref()
+        .map(|t| t.lines().map(str::to_owned).collect())
+        .unwrap_or_default();
+    let mut notes = Vec::new();
+    let server = format!("npmRegistryServer: \"{registry}\"");
+    match yaml_top_level(&lines, "npmRegistryServer") {
+        Some((i, old)) => {
+            let old = unquote(&old);
+            if old.trim_end_matches('/') != registry {
+                notes.push(format!("replaced npmRegistryServer (was {old})"));
+                lines[i] = server;
+            }
+        }
+        None => lines.push(server),
+    }
+    if url.starts_with("http://") {
+        let host = url::Url::parse(url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_owned))
+            .context("proxy URL has no host")?;
+        yarn_whitelist(&mut lines, &host, &mut notes);
+    }
+    if yaml_top_level(&lines, "npmScopes").is_some() {
+        notes.push("npmScopes in this file still resolve those scopes elsewhere".to_owned());
+    }
+    if let Some(value) = env.var("YARN_NPM_REGISTRY_SERVER")
+        && value.trim_end_matches('/') != registry
+    {
+        notes.push(format!(
+            "YARN_NPM_REGISTRY_SERVER={value} is set in this environment and overrides {}",
+            env.display(&path)
+        ));
+    }
+    if let Some(value) = env.var("YARN_REGISTRY")
+        && value.trim_end_matches('/') != registry
+    {
+        notes.push(format!(
+            "YARN_REGISTRY={value} is set in this environment and overrides the npm registry for Yarn 1"
+        ));
+    }
+    let mut content = lines.join("\n");
+    content.push('\n');
+    let mut change = Change::edited(Client::Yarn, path, existing.as_deref(), content, notes);
+    if change.outcome != Outcome::Unchanged {
+        change.notes.push("applies to Yarn 2+; Yarn 1 reads the npm file. Existing yarn.lock files pin the URLs resolved at lock time, so regenerate them through the proxy".to_owned());
+    }
+    Ok(change)
+}
+
+// ---------------------------------------------------------------------------
+// Bun
+
+fn bun(url: &str, env: &Environment) -> anyhow::Result<Change> {
+    let home = env.home.join(".bunfig.toml");
+    // Bun also reads $XDG_CONFIG_HOME/.bunfig.toml; edit that one when it is
+    // the only one present.
+    let path = match env
+        .var("XDG_CONFIG_HOME")
+        .map(|dir| Path::new(dir).join(".bunfig.toml"))
+    {
+        Some(xdg) if !home.is_file() && xdg.is_file() => xdg,
+        _ => home,
+    };
+    let existing = read(&path)?;
+    let registry = format!("{url}/npm/");
+    let quoted = format!("\"{registry}\"");
+    let edit = set_keys(
         existing.as_deref(),
-        edit.text,
-        notes,
-    ))
+        Some("install"),
+        &['='],
+        &[("registry", &quoted)],
+        |k, v| format!("{k} = {v}"),
+    );
+    let mut notes = replaced_notes(&edit);
+    if edit.text.lines().any(|l| l.trim() == "[install.scopes]") {
+        notes
+            .push("[install.scopes] in this file still resolves those scopes elsewhere".to_owned());
+    }
+    for name in ["NPM_CONFIG_REGISTRY", "npm_config_registry"] {
+        notes.extend(override_note(env, name, Some(&registry), &path));
+    }
+    let mut change = Change::edited(Client::Bun, path, existing.as_deref(), edit.text, notes);
+    if change.outcome != Outcome::Unchanged {
+        change.notes.push("existing bun.lock files pin the URLs resolved at lock time; regenerate them through the proxy".to_owned());
+    }
+    Ok(change)
 }
 
 // ---------------------------------------------------------------------------

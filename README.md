@@ -1,6 +1,6 @@
 # middles
 
-A focused Rust registry proxy for npm, pip/PyPI, Composer 2, RubyGems through Bundler, opt-in official Homebrew bottles, and opt-in APT repositories. It filters out releases younger than your policy allows, optionally requires a minimum monthly download count where evidence is available, and rechecks policy when serving package archives. A [Docker registry proxy](docs/plans/docker-registry-proxy.md) is planned.
+A focused Rust registry proxy for npm (also serving pnpm, Yarn and Bun), pip/PyPI, Composer 2, RubyGems through Bundler, opt-in official Homebrew bottles, and opt-in APT repositories. It filters out releases younger than your policy allows, optionally requires a minimum monthly download count where evidence is available, and rechecks policy when serving package archives. A [Docker registry proxy](docs/plans/docker-registry-proxy.md) is planned.
 
 Homebrew support is disabled by default and enforces policy on official stable bottle requests that reach middles. Source downloads and client caches can bypass it; see the [Homebrew guide](docs/homebrew/README.md) and [recorded compatibility checks](docs/homebrew/compatibility.md).
 
@@ -130,11 +130,14 @@ dependencies; the smoke checks do not contact public package registries.
 middles configure --config middles.toml --dry-run
 middles configure --config middles.toml
 middles configure --url https://middles.example.com --only npm,pip,uv --profile ~/.zprofile
+middles configure --only pnpm,yarn,bun
 ```
 
 | Client | File | Change |
 | --- | --- | --- |
-| npm | `~/.npmrc` (`NPM_CONFIG_USERCONFIG`) | `registry`, `audit=false` |
+| npm, pnpm, Yarn 1 | `~/.npmrc` (`NPM_CONFIG_USERCONFIG`) | `registry`, `audit=false` |
+| Yarn 2+ | `~/.yarnrc.yml` (`YARN_RC_FILENAME`) | `npmRegistryServer`, plus `unsafeHttpWhitelist` for a plain-HTTP proxy URL |
+| Bun | `~/.bunfig.toml`, or `$XDG_CONFIG_HOME/.bunfig.toml` when only that exists | `[install] registry` |
 | pip | `pip.conf` in pip's user configuration directory (`PIP_CONFIG_FILE`) | `[global] index-url` |
 | uv | `~/.config/uv/uv.toml` (`UV_CONFIG_FILE`) | a default `[[index]]` |
 | Composer | `config.json` in Composer's home (`COMPOSER_HOME`) | `middles` repository first, `packagist.org` disabled, `secure-http` off for plain HTTP |
@@ -142,7 +145,7 @@ middles configure --url https://middles.example.com --only npm,pip,uv --profile 
 | Homebrew | shell profile chosen from `$SHELL`, or `--profile` | `HOMEBREW_ARTIFACT_DOMAIN` and `HOMEBREW_ARTIFACT_DOMAIN_NO_FALLBACK=1` exports |
 | APT | `/etc/apt/sources.list.d/middles.sources` | one deb822 stanza per `[[apt.repos]]` |
 
-Existing files are edited in place: the first live assignment of each key is replaced, and comments, other keys and other sections stay as they are. A value that already matches leaves the file untouched, so a second run reports every client as unchanged. Shell profiles only ever receive appended lines: a Homebrew variable that the profile or the current environment already sets to the target value is left alone, and one set to a different value skips the Homebrew step with a message instead of being rewritten. Variables that would override an edited file, such as `NPM_CONFIG_REGISTRY`, `PIP_INDEX_URL` or `UV_DEFAULT_INDEX`, are reported. Homebrew and APT follow their `enabled` flags unless named in `--only`, and `--skip` excludes clients. APT sources are written only when that directory exists and is writable; otherwise the stanzas are printed together with numbered client steps (save the file, disable the direct entries, keep the signing keys, run `apt-get update`), which the [APT guide](docs/apt/README.md#client-setup) also lists. A `uv.toml` that already declares another default index is rewritten without its comments. The command does not touch project files, scoped npm registries, extra indexes, existing lockfiles or client caches, which remain outside the proxy as described under Deployment boundary. The Bundler mirror was checked with the inert local fixture on Bundler 1.17.2; the direct-source setup below remains the configuration verified on 2.4.22.
+Existing files are edited in place: the first live assignment of each key is replaced, and comments, other keys and other sections stay as they are. A value that already matches leaves the file untouched, so a second run reports every client as unchanged. Shell profiles only ever receive appended lines: a Homebrew variable that the profile or the current environment already sets to the target value is left alone, and one set to a different value skips the Homebrew step with a message instead of being rewritten. Variables that would override an edited file, such as `NPM_CONFIG_REGISTRY`, `YARN_NPM_REGISTRY_SERVER`, `YARN_REGISTRY`, `PIP_INDEX_URL` or `UV_DEFAULT_INDEX`, are reported. `--only`/`--skip` accept `pnpm` and `yarn1` as names for the npm step, since those clients read the same file; `yarn` means Yarn 2+. Existing `.yarnrc.yml` and `bunfig.toml` files are edited line by line, so comments and other keys stay. Homebrew and APT follow their `enabled` flags unless named in `--only`, and `--skip` excludes clients. APT sources are written only when that directory exists and is writable; otherwise the stanzas are printed together with numbered client steps (save the file, disable the direct entries, keep the signing keys, run `apt-get update`), which the [APT guide](docs/apt/README.md#client-setup) also lists. A `uv.toml` that already declares another default index is rewritten without its comments. The command does not touch project files, scoped registries (npm `@scope:registry`, Yarn `npmScopes`, Bun `[install.scopes]`), extra indexes, existing lockfiles or client caches, which remain outside the proxy as described under Deployment boundary. The Bundler mirror was checked with the inert local fixture on Bundler 1.17.2; the direct-source setup below remains the configuration verified on 2.4.22.
 
 ### npm
 
@@ -158,6 +161,39 @@ audit=false
 ```
 
 Scoped packages, exact versions, distribution tags, and conventional npm tarball paths are supported. If `latest` is too young, it resolves to the highest eligible stable version no newer than upstream `latest`. Other blocked tags are removed. Publishing, login, search, npm audit, and private registry authentication are outside this initial scope. Published advisory lookup is available as described below; it does not replace archive scanning or npm audit's other behavior.
+
+### Yarn, pnpm, and Bun
+
+These clients speak the npm registry protocol and use the same `/npm/` endpoint. Yarn 1, pnpm, and Bun also read `registry` from `.npmrc` files, so the npm setup above covers them; Yarn 2+ reads only its own file.
+
+Yarn 1 (`.yarnrc`; a `registry` in `.npmrc` takes precedence over this file):
+
+```
+registry "http://127.0.0.1:6280/npm/"
+```
+
+Yarn 2+ (`.yarnrc.yml`; plain HTTP must be whitelisted, which an HTTPS proxy URL does not need):
+
+```yaml
+npmRegistryServer: "http://127.0.0.1:6280/npm"
+unsafeHttpWhitelist:
+  - "127.0.0.1"
+```
+
+pnpm (`.npmrc`):
+
+```ini
+registry=http://127.0.0.1:6280/npm/
+```
+
+Bun (`bunfig.toml`; this takes precedence over `.npmrc`):
+
+```toml
+[install]
+registry = "http://127.0.0.1:6280/npm/"
+```
+
+Checked on 2026-10-01 with Yarn 1.22.22, Yarn 4.10.3, pnpm 10.17.1, and Bun 1.4.2: adding a plain and a scoped package, then reinstalling from the lockfile with an empty cache (`--frozen-lockfile` or `--immutable`), and version lookups (`yarn info`, `yarn npm info`, `pnpm view`, `bun info`). Lockfiles record the proxy's `/artifacts/npm/` URLs (Yarn 2+ as `__archiveUrl`), so lockfiles created against the public registry keep fetching from the URLs they pin until regenerated through the proxy. Yarn 2+ also caches registry metadata under its global folder (`~/.yarn/berry/metadata/npm`) keyed by the registry hostname alone and serves exact-version resolutions from that cache without contacting the registry; if the proxy shares a hostname with a registry Yarn used before, such as another local server on 127.0.0.1, remove that directory or set `globalFolder` before switching. `yarn audit`, `pnpm audit`, and `bun audit` post to audit endpoints the proxy does not serve, like `npm audit`. `NPM_CONFIG_REGISTRY` overrides the files for npm, pnpm, and Bun; `YARN_REGISTRY` for Yarn 1; `YARN_NPM_REGISTRY_SERVER` for Yarn 2+. The proxy keeps the `time` entries of eligible versions, so client-side age gates such as pnpm's `minimumReleaseAge` still have their input.
 
 ### pip
 
@@ -468,7 +504,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-For an opt-in live compatibility check, build the binary and run `python3 scripts/smoke.py` with npm, pip, and Composer installed. It installs/downloads small public packages into a temporary directory with scripts/plugins disabled and isolated caches. It explicitly sets Composer's age to zero to test fresh-cache installation; deterministic tests separately verify its waiting period.
+For an opt-in live compatibility check, build the binary and run `python3 scripts/smoke.py` with npm, pip, and Composer installed. Yarn, pnpm, and Bun are exercised when found on `PATH` or named with `MIDDLES_SMOKE_YARN`, `MIDDLES_SMOKE_PNPM`, or `MIDDLES_SMOKE_BUN` (for example `MIDDLES_SMOKE_YARN="corepack yarn@4.10.3"`); each must record the proxy's artifact URLs in its lockfile. It installs/downloads small public packages into a temporary directory with scripts/plugins disabled and isolated caches. It explicitly sets Composer's age to zero to test fresh-cache installation; deterministic tests separately verify its waiting period.
 
 Run `just ruby-smoke` for local-only RubyGems/Bundler compatibility checks with inert generated gems and isolated caches. Requires Ruby, RubyGems, Bundler, and Python 3. Set `BUNDLE_COMMAND` to select a Bundler executable. Set `MIDDLES_SMOKE_RUBYGEMS=1` when running the multi-registry live smoke test to include a public Ruby gem.
 
