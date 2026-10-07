@@ -129,11 +129,7 @@ pub async fn handle(
                     .and_then(Value::as_str)
                     .map(|url| (version, url))
             })
-            .find(|(_, raw)| {
-                url::Url::parse(raw)
-                    .ok()
-                    .is_some_and(|u| u.path().rsplit('/').next() == Some(filename))
-            })
+            .find(|(_, raw)| tarball_basename(raw).as_deref() == Some(filename))
             .ok_or_else(|| Error::denied("tarball does not belong to an eligible npm version"))?;
         let identity = (method == Method::GET)
             .then(|| crate::stats::Identity::new(Ecosystem::Npm, package, version));
@@ -141,14 +137,20 @@ pub async fn handle(
             .await?;
         return app.stream_download(url, headers, identity).await;
     }
+    // Advertise the registry-conventional tarball path under the proxy, so a lockfile
+    // differs from one made against upstream only by the registry prefix (npm, Yarn 1,
+    // Bun) or omits the URL altogether when it matches the configured registry (pnpm,
+    // Yarn 2+). The opaque /artifacts/npm/ route stays served for lockfiles that pin it.
+    let public_url = app.config.public_url.trim_end_matches('/');
     for (version, info) in doc["versions"].as_object_mut().unwrap() {
         if let Some(dist) = info.get_mut("dist").and_then(Value::as_object_mut)
-            && dist.get("tarball").and_then(Value::as_str).is_some()
+            && let Some(upstream) = dist.get("tarball").and_then(Value::as_str)
         {
-            dist.insert(
-                "tarball".into(),
-                json!(app.artifact_url(Ecosystem::Npm, package, version, "package.tgz")),
-            );
+            let url = match tarball_basename(upstream) {
+                Some(basename) => format!("{public_url}/npm/{package}/-/{basename}"),
+                None => app.artifact_url(Ecosystem::Npm, package, version, "package.tgz"),
+            };
+            dist.insert("tarball".into(), json!(url));
         }
     }
     if !suffix.is_empty() {
@@ -199,6 +201,15 @@ pub async fn artifact(
         .ok_or_else(|| Error::denied("npm artifact is not eligible"))
 }
 
+/// Final path segment of an upstream tarball URL, exactly as the registry serves it.
+/// Conventional registries name it `<unscoped-name>-<version>.tgz`, and the `-/`
+/// route matches lockfile requests against this same segment.
+fn tarball_basename(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let basename = parsed.path().rsplit('/').next()?;
+    (!basename.is_empty()).then(|| basename.to_owned())
+}
+
 fn split_path(path: &str) -> Result<(&str, &str)> {
     let end = if path.starts_with('@') {
         let scope = path
@@ -228,6 +239,20 @@ mod tests {
         assert!(result["versions"].get("2.0.0").is_none());
         assert!(result["versions"].get("0.9.0").is_none());
         assert!(result["time"].get("2.0.0").is_none());
+    }
+    #[test]
+    fn tarball_basename_follows_upstream_naming() {
+        assert_eq!(
+            tarball_basename("https://registry.npmjs.org/@babel/core/-/core-7.22.20.tgz")
+                .as_deref(),
+            Some("core-7.22.20.tgz")
+        );
+        assert_eq!(
+            tarball_basename("http://127.0.0.1:1/blob/demo-1.0.0.tgz?x=1").as_deref(),
+            Some("demo-1.0.0.tgz")
+        );
+        assert_eq!(tarball_basename("https://registry.npmjs.org/"), None);
+        assert_eq!(tarball_basename("not a url"), None);
     }
     #[test]
     fn scoped_and_legacy_paths() {

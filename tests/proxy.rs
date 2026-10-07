@@ -179,6 +179,11 @@ async fn npm_filters_resolves_tags_and_gates_locked_artifacts() {
         doc["versions"]["1.0.0"]["dist"]["integrity"],
         "sha512-unchanged"
     );
+    // Eligible versions advertise the registry-conventional tarball path under the proxy.
+    assert_eq!(
+        doc["versions"]["1.0.0"]["dist"]["tarball"],
+        "http://127.0.0.1:6280/npm/demo/-/demo-1.0.0.tgz"
+    );
     let archive = path(
         doc["versions"]["1.0.0"]["dist"]["tarball"]
             .as_str()
@@ -208,17 +213,22 @@ async fn npm_filters_resolves_tags_and_gates_locked_artifacts() {
             .0,
         StatusCode::FORBIDDEN
     );
+    // Lockfiles written by earlier releases pin the opaque /artifacts/ form; keep serving it.
     assert_eq!(
-        request(&f.router, "/npm/demo/-/demo-1.0.0.tgz", "*/*")
-            .await
-            .0,
-        StatusCode::OK
+        request(
+            &f.router,
+            &artifact_path("npm", "demo", "1.0.0", "package.tgz"),
+            "*/*"
+        )
+        .await,
+        (StatusCode::OK, json!("archive"))
     );
+    let (_, scoped) = request(&f.router, "/npm/@scope%2Fdemo/latest", "*/*").await;
+    assert_eq!(scoped["version"], "1.0.0");
+    // Scoped names keep their literal slash, as the public registry's tarball URLs do.
     assert_eq!(
-        request(&f.router, "/npm/@scope%2Fdemo/latest", "*/*")
-            .await
-            .1["version"],
-        "1.0.0"
+        scoped["dist"]["tarball"],
+        "http://127.0.0.1:6280/npm/@scope/demo/-/demo-1.0.0.tgz"
     );
     // Yarn 1 and pnpm encode the scope separator in lowercase; same package, cached.
     assert_eq!(

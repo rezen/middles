@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,10 +89,13 @@ min_age_days = 0
         (work / "npm-global.conf").touch()
         run(["npm", "install", "is-number@7.0.0", f"--registry={origin}/npm/", "--ignore-scripts", "--no-audit", "--no-fund", f"--cache={work}/npm-cache", f"--userconfig={work}/npm-user.conf", f"--globalconfig={work}/npm-global.conf"], npm_dir, env)
         lock = json.loads((npm_dir / "package-lock.json").read_text())
-        assert lock["packages"]["node_modules/is-number"]["resolved"].startswith(origin + "/artifacts/npm/")
+        # npm pins the registry-conventional path under the proxy, so the lockfile differs
+        # from one made against the public registry only by the registry prefix.
+        assert lock["packages"]["node_modules/is-number"]["resolved"] == origin + "/npm/is-number/-/is-number-7.0.0.tgz"
 
-        # Other npm-protocol clients: each resolves a plain and a scoped package and
-        # must record the proxy's artifact URLs in its own lockfile.
+        # Other npm-protocol clients: each resolves a plain and a scoped package. Yarn 1
+        # and Bun pin the proxy's conventional tarball URLs; pnpm and Yarn 2+ recognise
+        # them as the configured registry's own and omit the URL from their lockfiles.
         node_clients = []
         scoped = "@sindresorhus/is@4.6.0"
         package_json = '{"name":"middles-smoke","version":"1.0.0","private":true}'
@@ -107,7 +109,9 @@ min_age_days = 0
                 # Yarn 1 takes `registry` from .npmrc files ahead of .yarnrc.
                 (yarn_dir / ".npmrc").write_text(f"registry={origin}/npm/\n")
                 run([*yarn, "add", "is-number@7.0.0", scoped, "--ignore-scripts", "--non-interactive", "--no-progress", f"--cache-folder={work}/yarn-cache"], yarn_dir, env)
-                assert f'resolved "{origin}/artifacts/npm/' in (yarn_dir / "yarn.lock").read_text()
+                text = (yarn_dir / "yarn.lock").read_text()
+                assert f'resolved "{origin}/npm/is-number/-/is-number-7.0.0.tgz' in text
+                assert f'resolved "{origin}/npm/@sindresorhus/is/-/is-4.6.0.tgz' in text
             else:
                 # Yarn 2+ caches registry metadata per hostname under globalFolder, so keep it local.
                 (yarn_dir / ".yarnrc.yml").write_text(f"""npmRegistryServer: "{origin}/npm"
@@ -122,8 +126,10 @@ cacheFolder: "{work}/yarn-cache"
 globalFolder: "{work}/yarn-global"
 """)
                 run([*yarn, "add", "is-number@7.0.0", scoped], yarn_dir, env)
-                archive = "__archiveUrl=" + urllib.parse.quote(origin + "/artifacts/npm/", safe="")
-                assert archive in (yarn_dir / "yarn.lock").read_text()
+                text = (yarn_dir / "yarn.lock").read_text()
+                assert "__archiveUrl" not in text
+                assert 'resolution: "is-number@npm:7.0.0"' in text
+                assert 'resolution: "@sindresorhus/is@npm:4.6.0"' in text
             node_clients.append(f"Yarn {version}")
         else:
             print("skip: yarn is not on PATH and MIDDLES_SMOKE_YARN is unset", flush=True)
@@ -136,7 +142,9 @@ globalFolder: "{work}/yarn-global"
             (pnpm_dir / "package.json").write_text(package_json)
             (pnpm_dir / ".npmrc").write_text(f"registry={origin}/npm/\nstore-dir={work}/pnpm-store\ncache-dir={work}/pnpm-cache\nstate-dir={work}/pnpm-state\n")
             run([*pnpm, "add", "is-number@7.0.0", scoped, "--ignore-scripts"], pnpm_dir, env)
-            assert f"tarball: {origin}/artifacts/npm/" in (pnpm_dir / "pnpm-lock.yaml").read_text()
+            text = (pnpm_dir / "pnpm-lock.yaml").read_text()
+            assert "tarball:" not in text
+            assert "is-number@7.0.0:" in text and "'@sindresorhus/is@4.6.0':" in text
             node_clients.append(f"pnpm {version}")
         else:
             print("skip: pnpm is not on PATH and MIDDLES_SMOKE_PNPM is unset", flush=True)
@@ -149,7 +157,10 @@ globalFolder: "{work}/yarn-global"
             (bun_dir / "package.json").write_text(package_json)
             (bun_dir / "bunfig.toml").write_text(f'[install]\nregistry = "{origin}/npm/"\n\n[install.cache]\ndir = "{work}/bun-cache"\n')
             run([*bun, "add", "is-number@7.0.0", scoped, "--ignore-scripts"], bun_dir, dict(env, DO_NOT_TRACK="1", BUN_INSTALL_CACHE_DIR=f"{work}/bun-cache"))
-            assert f'"{origin}/artifacts/npm/' in (bun_dir / "bun.lock").read_text()
+            text = (bun_dir / "bun.lock").read_text()
+            assert "/artifacts/npm/" not in text
+            assert f'"{origin}/npm/is-number/-/is-number-7.0.0.tgz"' in text
+            assert f'"{origin}/npm/@sindresorhus/is/-/is-4.6.0.tgz"' in text
             node_clients.append(f"Bun {version}")
         else:
             print("skip: bun is not on PATH and MIDDLES_SMOKE_BUN is unset", flush=True)
