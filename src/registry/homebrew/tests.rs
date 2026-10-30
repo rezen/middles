@@ -76,102 +76,118 @@ fn graph_with_created(
     content_revision: u32,
     created: Option<&str>,
 ) -> Graph {
-    let mut objects = BTreeMap::new();
-    let mut files = serde_json::Map::new();
-    let mut descriptors = Vec::new();
-    let mut checksums = BTreeMap::new();
-    let mut children = BTreeMap::new();
-    let mut configs = BTreeMap::new();
-    for tag in platforms {
-        let (architecture, os) = platform_parts(tag);
-        let bottle = format!("fixture bottle for {tag} content {content_revision}").into_bytes();
-        let checksum = oci::digest(&bottle);
-        let cfg = serde_json::to_vec(&json!({"architecture":architecture,"os":os,"rootfs":{"type":"layers","diff_ids":[format!("sha256:{}","a".repeat(64))]}})).unwrap();
-        let config = oci::digest(&cfg);
+    let mut graph = Graph {
+        objects: BTreeMap::new(),
+        payload: json!([]),
+        checksums: BTreeMap::new(),
+        children: BTreeMap::new(),
+        configs: BTreeMap::new(),
+    };
+    graph.add_formula("tool", rebuild, platforms, content_revision, created);
+    graph
+}
+impl Graph {
+    /// Adds a signed core formula with one bottle per tag and re-signs the
+    /// catalogue. Bottle tags index the lookup maps, so they must be distinct
+    /// across the formulas of one graph.
+    fn add_formula(
+        &mut self,
+        name: &str,
+        rebuild: u64,
+        platforms: &[&str],
+        content_revision: u32,
+        created: Option<&str>,
+    ) {
+        let mut files = serde_json::Map::new();
+        let mut descriptors = Vec::new();
+        for tag in platforms {
+            let (architecture, os) = platform_parts(tag);
+            let bottle =
+                format!("fixture bottle for {tag} content {content_revision}").into_bytes();
+            let checksum = oci::digest(&bottle);
+            let cfg = serde_json::to_vec(&json!({"architecture":architecture,"os":os,"rootfs":{"type":"layers","diff_ids":[format!("sha256:{}","a".repeat(64))]}})).unwrap();
+            let config = oci::digest(&cfg);
+            let reference = format!(
+                "1.0.0.{tag}{}",
+                if rebuild == 0 {
+                    String::new()
+                } else {
+                    format!(".{rebuild}")
+                }
+            );
+            let mut annotations = json!({"com.github.package.type":"homebrew_bottle","org.opencontainers.image.ref.name":reference,"sh.brew.bottle.digest":checksum.trim_start_matches("sha256:"),"sh.brew.tab":"{}"});
+            if let Some(created) = created {
+                annotations["org.opencontainers.image.created"] = json!(created);
+            }
+            let child = serde_json::to_vec(&json!({"schemaVersion":2,"config":{"mediaType":oci::CONFIG,"digest":config,"size":cfg.len()},"layers":[{"mediaType":LAYER,"digest":checksum,"size":bottle.len()}],"annotations":annotations})).unwrap();
+            let child_digest = oci::digest(&child);
+            descriptors.push(json!({"mediaType":oci::MANIFEST,"digest":child_digest,"size":child.len(),"platform":{"architecture":architecture,"os":os},"annotations":annotations}));
+            files.insert(tag.to_string(), json!({"sha256":checksum.trim_start_matches("sha256:"),"url":format!("https://ghcr.io/v2/homebrew/core/{name}/blobs/{checksum}"),"cellar":":any_skip_relocation"}));
+            for (path, body, media, bottle) in [
+                (
+                    format!("blobs/{checksum}"),
+                    bottle,
+                    "application/octet-stream",
+                    true,
+                ),
+                (
+                    format!("blobs/{config}"),
+                    cfg,
+                    "application/octet-stream",
+                    false,
+                ),
+                (
+                    format!("manifests/{child_digest}"),
+                    child,
+                    oci::MANIFEST,
+                    false,
+                ),
+            ] {
+                self.objects.insert(
+                    format!("/v2/homebrew/core/{name}/{path}"),
+                    Object {
+                        body,
+                        media,
+                        bottle,
+                    },
+                );
+            }
+            assert!(
+                self.checksums.insert(tag.to_string(), checksum).is_none(),
+                "fixture bottle tags must be distinct across formulas"
+            );
+            self.children.insert(tag.to_string(), child_digest);
+            self.configs.insert(tag.to_string(), config);
+        }
+        let index =
+            serde_json::to_vec_pretty(&json!({"schemaVersion":2,"manifests":descriptors})).unwrap();
         let reference = format!(
-            "1.0.0.{tag}{}",
+            "1.0.0{}",
             if rebuild == 0 {
                 String::new()
             } else {
-                format!(".{rebuild}")
+                format!("-{rebuild}")
             }
         );
-        let mut annotations = json!({"com.github.package.type":"homebrew_bottle","org.opencontainers.image.ref.name":reference,"sh.brew.bottle.digest":checksum.trim_start_matches("sha256:"),"sh.brew.tab":"{}"});
-        if let Some(created) = created {
-            annotations["org.opencontainers.image.created"] = json!(created);
-        }
-        let child = serde_json::to_vec(&json!({"schemaVersion":2,"config":{"mediaType":oci::CONFIG,"digest":config,"size":cfg.len()},"layers":[{"mediaType":LAYER,"digest":checksum,"size":bottle.len()}],"annotations":annotations})).unwrap();
-        let child_digest = oci::digest(&child);
-        descriptors.push(json!({"mediaType":oci::MANIFEST,"digest":child_digest,"size":child.len(),"platform":{"architecture":architecture,"os":os},"annotations":annotations}));
-        files.insert(tag.to_string(), json!({"sha256":checksum.trim_start_matches("sha256:"),"url":format!("https://ghcr.io/v2/homebrew/core/tool/blobs/{checksum}"),"cellar":":any_skip_relocation"}));
-        for (path, body, media, bottle) in [
-            (
-                format!("blobs/{checksum}"),
-                bottle,
-                "application/octet-stream",
-                true,
-            ),
-            (
-                format!("blobs/{config}"),
-                cfg,
-                "application/octet-stream",
-                false,
-            ),
-            (
-                format!("manifests/{child_digest}"),
-                child,
-                oci::MANIFEST,
-                false,
-            ),
-        ] {
-            objects.insert(
-                format!("/v2/homebrew/core/tool/{path}"),
-                Object {
-                    body,
-                    media,
-                    bottle,
-                },
-            );
-        }
-        checksums.insert(tag.to_string(), checksum);
-        children.insert(tag.to_string(), child_digest);
-        configs.insert(tag.to_string(), config);
-    }
-    let index =
-        serde_json::to_vec_pretty(&json!({"schemaVersion":2,"manifests":descriptors})).unwrap();
-    let reference = format!(
-        "1.0.0{}",
-        if rebuild == 0 {
-            String::new()
-        } else {
-            format!("-{rebuild}")
-        }
-    );
-    objects.insert(
-        format!("/v2/homebrew/core/tool/manifests/{reference}"),
-        Object {
-            body: index,
-            media: oci::INDEX,
-            bottle: false,
-        },
-    );
-    let payload = json!([{"name":"tool","tap":"homebrew/core","versions":{"stable":"1.0.0","bottle":true},"revision":0,"version_scheme":0,
-        "ruby_source_checksum":{"sha256":"b".repeat(64)},"dependencies":[],"uses_from_macos":[],"variations":{},
-        "bottle":{"stable":{"root_url":"https://ghcr.io/v2/homebrew/core","rebuild":rebuild,"files":files}}}]);
-    objects.insert(
-        "/api/formula.jws.json".into(),
-        Object {
-            body: signed(&payload),
-            media: "application/json",
-            bottle: false,
-        },
-    );
-    Graph {
-        objects,
-        payload,
-        checksums,
-        children,
-        configs,
+        self.objects.insert(
+            format!("/v2/homebrew/core/{name}/manifests/{reference}"),
+            Object {
+                body: index,
+                media: oci::INDEX,
+                bottle: false,
+            },
+        );
+        self.payload.as_array_mut().unwrap().push(json!({"name":name,"tap":"homebrew/core","versions":{"stable":"1.0.0","bottle":true},"revision":0,"version_scheme":0,
+            "ruby_source_checksum":{"sha256":"b".repeat(64)},"dependencies":[],"uses_from_macos":[],"variations":{},
+            "bottle":{"stable":{"root_url":"https://ghcr.io/v2/homebrew/core","rebuild":rebuild,"files":files}}}));
+        self.objects.insert(
+            "/api/formula.jws.json".into(),
+            Object {
+                body: signed(&self.payload),
+                media: "application/json",
+                bottle: false,
+            },
+        );
     }
 }
 type Hit = (String, String, Option<String>);
@@ -910,4 +926,69 @@ async fn warming_records_verified_evidence_without_artifact_transfers() {
             .0,
         StatusCode::FORBIDDEN
     );
+}
+
+#[test]
+fn bootstrap_platforms_follow_homebrew_vendor_pins() {
+    let configured: Vec<String> = [
+        "arm64_tahoe",
+        "arm64_sequoia",
+        "sonoma",
+        "x86_64_linux",
+        "arm64_linux",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(
+        bottle_platforms(&configured, "portable-ruby"),
+        ["arm64_big_sur", "big_sur", "x86_64_linux", "arm64_linux"]
+    );
+    assert_eq!(bottle_platforms(&configured, "ruby"), configured);
+    assert!(!platform("arm64_big_sur") && !platform("big_sur"));
+}
+
+#[tokio::test]
+async fn portable_ruby_bootstrap_serves_only_the_pinned_bottle_under_policy() {
+    let f = fixture(7, false, &["arm64_tahoe"], 300).await;
+    f.state.graph.write().unwrap().add_formula(
+        "portable-ruby",
+        0,
+        &["arm64_big_sur", "big_sur", "x86_64_linux", "arm64_linux"],
+        0,
+        Some("2026-01-01T00:00:00Z"),
+    );
+    let path = |tag: &str| {
+        format!(
+            "/homebrew/v2/homebrew/core/portable-ruby/blobs/{}",
+            f.state.graph.read().unwrap().checksums[tag]
+        )
+    };
+    // vendor-install.sh on arm64 macOS requests the arm64_big_sur digest directly.
+    let (status, _, body) = request(&f.app, &path("arm64_big_sur"), Method::GET, &[]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(String::from_utf8(body).unwrap().contains("eligible at"));
+    assert_eq!(ledger(&f.app).await, 1);
+    let (status, _, body) = request(&f.app, "/homebrew/warm/portable-ruby", Method::GET, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    let doc: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(doc["bottles"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["bottles"][0]["platform"], "arm64_big_sur");
+    age(&f.app, 8).await;
+    let (status, _, body) = request(&f.app, &path("arm64_big_sur"), Method::GET, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, b"fixture bottle for arm64_big_sur content 0");
+    // Other processors and operating systems stay unserved for this configuration.
+    for tag in ["big_sur", "x86_64_linux", "arm64_linux"] {
+        assert_eq!(
+            request(&f.app, &path(tag), Method::GET, &[]).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(ledger(&f.app).await, 1);
+    // Ordinary formulas keep the configured platform.
+    let (status, _, body) = request(&f.app, "/homebrew/warm/tool", Method::GET, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    let doc: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(doc["bottles"][0]["platform"], "arm64_tahoe");
 }

@@ -8,9 +8,18 @@ other adapters retain their configuration and behavior.
 The guarantee is **policy enforcement on official bottle requests that reach
 middles**. The artifact environment variables do not control every Homebrew
 installation. Source builds, casks, third-party taps, HEAD installs, arbitrary
-URLs, portable-Ruby/bootstrap downloads and already-cached bottles are outside
-this scope. Unsupported requests reaching `/homebrew/` fail explicitly. Excluded
-traffic that never reaches middles needs separate client and egress controls.
+URLs and already-cached bottles are outside this scope. Unsupported requests
+reaching `/homebrew/` fail explicitly. Excluded traffic that never reaches middles
+needs separate client and egress controls.
+
+Homebrew's portable Ruby bootstrap is in scope. `brew vendor-install ruby` and the
+automatic upgrade request the `portable-ruby` core bottle by digest, using the tag
+pinned in `Library/Homebrew/vendor/portable-ruby-<arch>-<os>` rather than the
+running macOS version: `arm64_big_sur` for arm64 macOS, `big_sur` for x86_64
+macOS, and `arm64_linux` or `x86_64_linux` on Linux. Middles maps each configured
+platform to that tag for this one formula and applies the usual signed-catalogue,
+OCI graph and age checks; the other portable Ruby bottles stay unserved. No
+`platforms` entry for these tags is needed or accepted.
 
 ## Configure and install
 
@@ -27,9 +36,9 @@ max_api_mb = 64
 
 Use Homebrew **7.0.6 or newer** for the documented setup; 7.0.6 is the tested
 minimum, not a claim about the oldest release with no-fallback support. Provision
-Homebrew and its portable Ruby separately. Keep signed API metadata on Homebrew's
-normal upstream; no custom `HOMEBREW_API_DOMAIN` or verification-disabling flag is
-required for client use.
+Homebrew itself separately; its portable Ruby downloads through middles. Keep
+signed API metadata on Homebrew's normal upstream; no custom `HOMEBREW_API_DOMAIN`
+or verification-disabling flag is required for client use.
 
 ```sh
 export HOMEBREW_ARTIFACT_DOMAIN=https://middles.example.com/homebrew

@@ -279,7 +279,7 @@ min_monthly_downloads = 0
 install_hooks = "report"
 ```
 
-For the tested Homebrew 7.0.6 client, with portable Ruby already provisioned:
+For the tested Homebrew 7.0.6 client:
 
 ```sh
 export HOMEBREW_ARTIFACT_DOMAIN=http://127.0.0.1:6280/homebrew
@@ -301,10 +301,14 @@ ledger across restarts. Signed Homebrew API metadata stays upstream and unchange
 The adapter serves only current stable official core bottles and their verified
 OCI metadata. Direct blobs, ranges and HEAD requests receive the same policy.
 Monthly-download thresholds and hook denial are unsupported and fail validation
-when enabled, including inherited policies. Source builds, casks, taps, HEAD
-installs, arbitrary downloads and bootstrap artifacts are excluded. Environment
-variables alone do not enforce all installations: fully cached bottles need no
-proxy request, and some excluded downloads go directly upstream. Use managed
+when enabled, including inherited policies. Homebrew's portable Ruby bootstrap is
+served as the `portable-ruby` core bottle Homebrew pins for each configured
+platform's processor and operating system (`arm64_big_sur`, `big_sur`,
+`arm64_linux` or `x86_64_linux`), with the same verification and age policy.
+Source builds, casks, taps, HEAD installs and arbitrary downloads are excluded.
+Environment variables alone do not enforce all installations: fully cached
+bottles need no proxy request, and some excluded downloads go directly upstream.
+Use managed
 client configuration and egress for a stronger deployment guarantee. The
 [guide](docs/homebrew/README.md) covers platform qualification, warming, backup,
 diagnostics and opt-in smoke tests.

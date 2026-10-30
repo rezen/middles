@@ -53,6 +53,32 @@ fn platform_parts(tag: &str) -> (&str, &str) {
         },
     )
 }
+/// Homebrew provisions its portable Ruby from this core formula. The client does
+/// not request the running macOS bottle: `Library/Homebrew/vendor/portable-ruby-<arch>-<os>`
+/// pins the oldest supported macOS tag per processor, and Linux uses its own tag.
+const BOOTSTRAP_FORMULA: &str = "portable-ruby";
+fn bootstrap_platform(tag: &str) -> &'static str {
+    match platform_parts(tag) {
+        ("arm64", "darwin") => "arm64_big_sur",
+        ("amd64", "darwin") => "big_sur",
+        ("arm64", "linux") => "arm64_linux",
+        _ => "x86_64_linux",
+    }
+}
+/// Bottle tags served for a formula: the configured platforms, or for the
+/// bootstrap formula the tags Homebrew pins for those platforms, in order.
+fn bottle_platforms(configured: &[String], name: &str) -> Vec<String> {
+    if name != BOOTSTRAP_FORMULA {
+        return configured.to_vec();
+    }
+    let mut tags: Vec<String> = Vec::new();
+    for tag in configured.iter().map(|p| bootstrap_platform(p).to_owned()) {
+        if !tags.contains(&tag) {
+            tags.push(tag);
+        }
+    }
+    tags
+}
 fn formula_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 214
@@ -219,7 +245,7 @@ async fn dispatch(
                 .iter()
                 .any(|p| p.ends_with("linux")),
         );
-        for tag in &app.config.homebrew.platforms {
+        for tag in &release.platforms(app) {
             if release.file(tag).is_none() {
                 continue;
             }
@@ -280,7 +306,7 @@ async fn dispatch(
         return raw_response(&release.index, method);
     }
     if endpoint == "manifests" {
-        for tag in &app.config.homebrew.platforms {
+        for tag in &release.platforms(app) {
             if let Some(d) = release.descriptor(tag)
                 && d.digest == reference
             {
@@ -294,14 +320,15 @@ async fn dispatch(
             "manifest is not a supported current Homebrew bottle",
         ));
     }
+    let platforms = release.platforms(app);
     let mut blocked = None;
-    for tag in &app.config.homebrew.platforms {
+    for tag in &platforms {
         if release.file(tag).is_none() {
             continue;
         }
         // Known bottle digests need only their selected platform. An unknown config
         // digest can trigger at most eight verified children of this known formula.
-        let is_known_bottle = app.config.homebrew.platforms.iter().any(|p| {
+        let is_known_bottle = platforms.iter().any(|p| {
             release
                 .file(p)
                 .and_then(|v| v["sha256"].as_str())
@@ -429,7 +456,7 @@ async fn catalog(app: &App) -> Result<Arc<Value>> {
     let cfg = &app.config.homebrew;
     let url = format!("{}/formula.jws.json", cfg.api.trim_end_matches('/'));
     let key = format!(
-        "homebrew-catalog-v1:{}:{}:{}",
+        "homebrew-catalog-v2:{}:{}:{}",
         url,
         oci::digest(app.homebrew_key),
         cfg.platforms.join(",")
@@ -455,13 +482,14 @@ async fn catalog(app: &App) -> Result<Arc<Value>> {
                 for field in ["versions", "revision", "version_scheme", "ruby_source_checksum", "dependencies", "uses_from_macos", "uses_from_macos_bounds"] {
                     info.insert(field.into(), f[field].clone());
                 }
+                let tags = bottle_platforms(&platforms, name);
                 let mut files = serde_json::Map::new();
-                for p in &platforms {
+                for p in &tags {
                     if let Some(file) = f["bottle"]["stable"]["files"].get(p) { files.insert(p.clone(), file.clone()); }
                 }
                 info.insert("bottle".into(), json!({"stable":{"rebuild":f["bottle"]["stable"]["rebuild"],"root_url":f["bottle"]["stable"]["root_url"],"files":files}}));
                 let mut variations = serde_json::Map::new();
-                for p in &platforms {
+                for p in &tags {
                     if let Some(v) = f["variations"].get(p) {
                         variations.insert(p.clone(), json!({"dependencies":v["dependencies"],"uses_from_macos":v["uses_from_macos"],"uses_from_macos_bounds":v["uses_from_macos_bounds"],"ruby_source_checksum":v["ruby_source_checksum"]}));
                     }
@@ -517,6 +545,10 @@ struct Release {
     descriptors: Vec<Descriptor>,
 }
 impl Release {
+    /// Bottle tags served for this formula; see [`bottle_platforms`].
+    fn platforms(&self, app: &App) -> Vec<String> {
+        bottle_platforms(&app.config.homebrew.platforms, &self.name)
+    }
     fn file(&self, tag: &str) -> Option<&Value> {
         self.info["bottle"]["stable"]["files"].get(tag)
     }
